@@ -39,12 +39,27 @@ data requests from `file://` pages, so the local server is the reliable way.)
 
 ## How to use it
 
-**League page** (opens here) — your league's front page. A dossier of the format, a
-countdown to the draft, power rankings, standings, this week's matchups, and schedule
-strength for the teams *in your league*. Power rankings weight roster strength 55%,
-record 28% and points 17%, because an 8-team league where everyone makes the playoffs
-produces a lot of meaningless wins — so the best roster can and should outrank a team
-with a better record.
+**League page** (opens here) — your league's front page: format dossier, draft
+countdown, power rankings, standings, this week's matchups, league schedule strength,
+and records/history.
+
+Power rankings are built on four things, not two:
+
+| Weight | Component | What it catches |
+|---|---|---|
+| 40% | **SRS** | Every margin adjusted for who you played. If the last-place team clobbers the first-place team, that counts far more than the same margin against a weak side — and losing narrowly to the best team barely hurts. Expressed in points per week, centred on zero. |
+| 25% | **All-play** | Your record if you'd played *every* team every week. Removes schedule luck entirely. |
+| 25% | **Roster strength** | The best legal lineup you can field going forward. |
+| 10% | **Record** | It still counts, but least — in an 8-team league where all 8 make the playoffs, wins are noisy. |
+
+Those weights ramp in with games played and reach full strength around six games,
+with roster strength taking up the slack before then. Two weeks of results is mostly
+noise, and if the schedule hasn't yet connected every team to every other, SRS
+genuinely cannot compare one half of the league to the other. **Luck** is how far your
+real record sits above or below your all-play record.
+
+Standings show the *same columns from the same rows*, sorted by record instead of by
+merit, so the two tables can never disagree.
 
 **Settings tab** (last) — type your Sleeper username, pick your league, hit Import. That pulls
 in your exact scoring rules, roster slots and team count. Everything it imported is
@@ -62,6 +77,10 @@ Three things on this tab do the actual thinking for you:
   good one who'll be gone — so it multiplies value over replacement by the chance
   he disappears before your next pick (estimated from average draft position),
   nudged toward slots you haven't filled.
+- **Draft report card** grades the draft on two separate questions: did players fall
+  to you past their average draft position (value), and is the roster you ended up
+  with actually good (strength versus the rest of the league). Those come apart more
+  often than you'd think.
 - **Runs** watches the last 8 picks. When a position empties faster than usual the
   cost of waiting jumps, and that's when to reach a round early.
 - **Rank: playoff weeks 15–17** re-ranks the entire board — replacement levels,
@@ -69,7 +88,9 @@ Three things on this tab do the actual thinking for you:
   instead of the full year. Detroit at 1.0 season / 7.4 playoffs versus Indianapolis
   at 7.4 / 1.3 is a genuine pick-changer.
 
-**Lineup tab** — *Pull my roster from Sleeper*, set the week, and it shows the
+**Lineup tab** — opens with **this week in three decisions** (start / claim / cut),
+assembled from your roster, the optimizer and what the rest of Sleeper is doing.
+Below that: *Pull my roster from Sleeper*, set the week, and it shows the
 highest-scoring legal lineup you can field, plus how many points that beats your
 currently-set lineup by.
 
@@ -92,6 +113,12 @@ currently-set lineup by.
 - **Roster health** — problems a points total won't show you: three players on one
   NFL team (shared bye, shared game script), a kicker spent too early, a position
   you've stacked deeper than you can start, and bye weeks piling up.
+- **Were the projections any good?** — measures projections against real box scores
+  from four sampled weeks, both sides scored through your league's rules. On 2025 data
+  it found quarterback projections ran **16% hot** while tight ends ran 4% cold, and
+  that the average weekly miss is around 5.7 points on a ~10-point projection. Players
+  who were projected but barely played are counted rather than excluded: if you started
+  him and got nothing, the projection cost you the week.
 
 It works on a phone. Below 820px the tables become cards rather than scrolling
 sideways, so the draft board is usable one-handed while you're actually drafting.
@@ -172,7 +199,7 @@ against live data. Run it after any change to `app.js`:
 sh run-tests.sh            # add --fresh to re-download the projection data
 ```
 
-You want to see `*** ALL CHECKS PASSED ***` at the bottom. 262 checks currently,
+You want to see `*** ALL CHECKS PASSED ***` at the bottom. 295 checks currently,
 covering:
 
 - Every projected player, both feeds: under Sleeper's default rules the scoring
@@ -187,6 +214,13 @@ covering:
 - Grade bands landing on the right picks at 8 and 12 teams, and no band left empty.
 - Stat-key bridging, against a real 147-rule league config downloaded at test time.
 - Strength-of-schedule ranking, including that tied schedules get equal ratings.
+- SRS converging on a hand-solved algebraic answer, and the specific case of the
+  bottom team hammering the top team moving both ratings the right way.
+- All-play catching a team that scores second-best every week but keeps drawing the
+  best team, and therefore sits 0-2 while deserving better.
+- Power weights ramping down when only two games have been played.
+- A uniform 10% shortfall registering as exactly −10% bias, which is what caught the
+  bug where projections were anchored and actuals weren't.
 - Roster comparison: elite rosters beating weak ones, unstartable players excluded
   from the total, empty and unknown-player rosters not crashing.
 - Snake pick maths feeding the recommender: on the clock the wait runs to your next

@@ -13,15 +13,15 @@
    ========================================================================== */
 
 :root {
-  --paper:   #f6f3ec;
+  --paper:   #f7f4ed;
   --paper-2: #efeade;
   --paper-3: #e5dfd0;
-  --ink:     #191512;
+  --ink:     #14110e;
   --ink-2:   #443c33;
   --ink-3:   #6f6557;
-  --rule:    #cec5b3;
-  --rule-2:  #b3a893;
-  --accent:  #8e2c1d;
+  --rule:    #d6cebd;
+  --rule-2:  #ab9f88;
+  --accent:  #97301f;
   --accent-2:#1d4a3b;
   --good:    #1d5c40;
   --warn:    #8a5a0b;
@@ -54,6 +54,9 @@
     --qb: #e08cb4; --rb: #6cbb92; --wr: #7bb2e0;
     --te: #d9a544; --k:  #a99ae0; --def:#a8a196;
   }
+  body { background-image: repeating-linear-gradient(0deg,
+    rgba(255,255,255,.016) 0 1px, transparent 1px 3px); }
+  tbody tr:nth-child(even) { background: rgba(255,255,255,.026); }
 }
 
 * { box-sizing: border-box; }
@@ -61,7 +64,10 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--paper);
+  /* A faint horizontal grain so the paper reads as stock rather than as flat #fff. */
+  background-color: var(--paper);
+  background-image: repeating-linear-gradient(0deg,
+    rgba(0,0,0,.014) 0 1px, transparent 1px 3px);
   color: var(--ink);
   font: 15px/1.6 var(--sans);
   font-variant-numeric: tabular-nums;
@@ -140,15 +146,21 @@ footer b { font-style: normal; font-weight: 600; color: var(--ink-2); }
 /* ------------------------------------------------------- sheets & heads -- */
 
 .sheet, .card {
+  position: relative;
   background: none;
   border-top: 2px solid var(--ink);
-  padding: 13px 0 26px;
-  margin: 0 0 10px;
+  padding: 12px 0 20px;
+  margin: 0 0 6px;
+}
+/* a short accent segment where each section rule begins — an annual's house style */
+.sheet::before, .card::before {
+  content: ""; position: absolute; top: -2px; left: 0;
+  width: 52px; height: 2px; background: var(--accent);
 }
 
 h2 {
-  margin: 0 0 9px;
-  font: 400 17px/1.2 var(--serif);
+  margin: 0 0 8px;
+  font: 400 19px/1.2 var(--serif);
   letter-spacing: -.01em;
   display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;
 }
@@ -275,12 +287,18 @@ th {
 }
 td { padding: 5px 9px 5px 0; border-bottom: 1px solid var(--rule); }
 th:last-child, td:last-child { padding-right: 0; }
-tbody tr:hover { background: var(--paper-2); }
+/* Faint banding makes a dense table scannable across a wide row. */
+tbody tr:nth-child(even) { background: rgba(0,0,0,.022); }
+tbody tr:hover { background: var(--paper-3); }
 
-.num-col, td.n { text-align: right; }
+.num-col { text-align: right; }
+/* Numbers in the serif at a slightly larger size: this is a stat sheet. */
+td.n { text-align: right; font: 400 14.5px/1.4 var(--serif); }
+td.c-rank { font: 400 15px/1.4 var(--serif); color: var(--ink-3); }
+tbody tr:first-child td.c-rank { color: var(--accent); }
 th.mid, td.mid { text-align: center; }
 td.c-player { font-weight: 600; }
-td.c-vor { font-family: var(--serif); font-size: 15px; }
+td.c-vor { font-family: var(--serif); font-size: 16px; font-weight: 400; }
 td.win { color: var(--accent-2); }
 .you {
   font: 400 9.5px/1 var(--sans); text-transform: uppercase; letter-spacing: .14em;
@@ -332,6 +350,8 @@ tr.mine td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* ------------------------------------------------------------- layouts ---- */
 
 .two-up      { display: grid; grid-template-columns: 1fr 1fr; gap: 0 34px; align-items: start; }
+/* Nine-column tables need the full width; side by side they clip. */
+.stacked     { display: block; }
 .draft-layout{ display: grid; grid-template-columns: minmax(0,1fr) 316px; gap: 0 34px; align-items: start; }
 .lineup-layout{display: grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1fr); gap: 0 34px; align-items: start; }
 .teams-layout{ display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap: 0 34px; align-items: start; }
@@ -469,6 +489,35 @@ tr.mine td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .trend-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trend-meta { color: var(--ink-3); font-size: 11.5px; flex: 0 0 auto; }
 
+/* -------------------------------------------------- records / recap / digest -- */
+
+.rec-cols {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  gap: 4px 30px; margin-top: 8px;
+}
+.rec-cols.one { grid-template-columns: 1fr; }
+.rec-block { padding: 4px 0 10px; }
+.rec-block h3 { border-bottom: 1px solid var(--rule); padding-bottom: 5px; }
+.rec-line {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 3px 0; font-size: 12.5px; border-bottom: 1px solid var(--rule);
+}
+.rec-block .rec-line:last-child { border-bottom: 0; }
+.rec-line em { font-style: italic; color: var(--ink-3); }
+.rec-line strong { font-weight: 600; }
+.rec-num { font: 400 14.5px/1.2 var(--serif); flex: 0 0 auto; }
+
+.recap-head { display: flex; flex-wrap: wrap; gap: 26px; margin: 6px 0 12px; }
+.recap-fig { min-width: 96px; }
+.recap-fig span {
+  display: block; font: 400 27px/1 var(--serif); color: var(--accent);
+}
+.recap-fig span small { font-size: 15px; color: var(--ink-3); }
+.recap-fig em {
+  display: block; margin-top: 3px; font: italic 400 11.5px/1.35 var(--serif);
+  color: var(--ink-3); max-width: 15ch;
+}
+
 /* =========================================================================
    NARROW SCREENS
    ========================================================================= */
@@ -529,7 +578,8 @@ tr.mine td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   .match-side:last-child { flex-direction: row; }
   .match-mid { order: 3; }
   .scoring-editor { columns: 1; }
-  .trade-grid, .trend { grid-template-columns: 1fr; gap: 18px; }
+  .trade-grid, .trend, .rec-cols { grid-template-columns: 1fr; gap: 18px; }
+  .recap-head { gap: 18px; }
   .facts { grid-template-columns: 1fr 1fr; gap: 0 18px; }
   input[type=text] { max-width: none; }
   select { width: 100%; }

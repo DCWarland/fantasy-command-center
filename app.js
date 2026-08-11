@@ -119,6 +119,8 @@ const S = {
   draftStatus: '', draftType: '',
   fantasySchedule: null,           // {opponents: {rosterId: {week: oppRosterId}}}
   matchups: null,                  // this week's matchup rows
+  results: null,                   // {games:[{week,a:{id,pts},b:{id,pts}}]}
+  accuracy: null,                  // sampled projected-vs-actual comparison
   drafted: LS.get('drafted', {}),      // player_id -> 'me' | 'other'
   myRoster: LS.get('myRoster', []),    // player_ids on my team
   sleeperStarters: [],                 // what Sleeper currently has me starting
@@ -297,6 +299,86 @@ async function loadTrending() {
     api('/v1/players/nfl/trending/drop?lookback_hours=24&limit=15').catch(() => []),
   ]);
   return { adds: adds || [], drops: drops || [] };
+}
+
+/* How good were these projections, actually?
+
+   Sleeper publishes real box-score stats alongside its projections, so the two can be
+   compared directly for weeks already played. We score BOTH through the same league
+   rules, so what comes out is "points my scoring settings would have awarded" versus
+   "points actually awarded" — an honest apples-to-apples read.
+
+   Sampled weeks rather than all of them: each week is a couple of megabytes and four
+   spread across a season is plenty to spot a systematic lean. The sample is stated in
+   the UI so nobody mistakes it for the whole season. */
+const ACCURACY_WEEKS = [3, 7, 11, 15];
+
+async function loadAccuracy(season, force) {
+  const key = `cache.acc.${season}`;
+  const hit = LS.get(key);
+  if (!force && hit && Date.now() - hit.at < 7 * 24 * 3600 * 1000) return hit;
+
+  const per = await Promise.all(ACCURACY_WEEKS.map(async w => {
+    const [proj, actual] = await Promise.all([
+      api(projUrl(season, w)).catch(() => []),
+      api(`/v1/stats/nfl/regular/${season}/${w}`).catch(() => ({})),
+    ]);
+    const rows = [];
+    (proj || []).forEach(r => {
+      const t = trimRow(r);
+      if (!POSITIONS.includes(t.pos) || t.stats.pts_half_ppr == null) return;
+      const act = (actual || {})[t.id];
+      if (!act) return;
+      rows.push({ id: t.id, pos: t.pos, name: t.name,
+                  proj: t.stats, act: bridgeStats(act) });
+    });
+    return { week: w, rows };
+  }));
+
+  const rec = { at: Date.now(), season, weeks: per };
+  // Only the fields we need — the raw payloads are far too big for browser storage.
+  try { LS.set(key, rec); } catch (e) { console.warn('accuracy cache too big', e); }
+  return rec;
+}
+
+/* Compare projected vs actual under the current scoring rules, by position. */
+function accuracySummary() {
+  if (!S.accuracy) return null;
+  const byPos = {};
+  let n = 0;
+
+  S.accuracy.weeks.forEach(wk => wk.rows.forEach(r => {
+    // Only players who were actually expected to matter; garbage-time noise from
+    // 2,000 inactive players would swamp the signal.
+    /* Both sides MUST go through the same scoring path. An earlier version scored
+       projections with scoreStats (which anchors to Sleeper's headline figure) and
+       actuals with a raw dot product — so quarterbacks appeared to miss by 20% when
+       the gap was entirely our own anchoring. Actual stats carry pts_half_ppr just
+       like projections do, so the same function works on both. */
+    const pj = scoreStats(r.proj, S.scoring).pts;
+    if (pj < 5) return;
+    const ac = scoreStats(r.act, S.scoring).pts;
+    const g = byPos[r.pos] = byPos[r.pos] || { n: 0, sumP: 0, sumA: 0, absErr: 0, beat: 0 };
+    g.n++; n++;
+    g.sumP += pj; g.sumA += ac;
+    g.absErr += Math.abs(ac - pj);
+    if (ac > pj) g.beat++;
+  }));
+
+  const out = POSITIONS.filter(p => byPos[p]).map(p => {
+    const g = byPos[p];
+    return {
+      pos: p, n: g.n,
+      avgProj: g.sumP / g.n,
+      avgActual: g.sumA / g.n,
+      // Negative bias = projections ran hot, i.e. players underdelivered.
+      bias: (g.sumA - g.sumP) / g.n,
+      biasPct: g.sumP ? 100 * (g.sumA - g.sumP) / g.sumP : 0,
+      mae: g.absErr / g.n,
+      beatPct: 100 * g.beat / g.n,
+    };
+  });
+  return { rows: out, n, season: S.accuracy.season, weeks: ACCURACY_WEEKS };
 }
 
 /* ---- the NFL schedule, and strength of schedule ------------------------
@@ -707,46 +789,214 @@ async function loadFantasySchedule(force) {
   return rec;
 }
 
+/* Every completed game in the league, week by week.
+
+   One request per week, and the same data feeds power rankings, head-to-head records
+   and the season's biggest results. A row with 0 points on both sides hasn't been
+   played yet, so it's skipped. */
+async function loadResults(force) {
+  if (!S.leagueId) return null;
+  const key = `cache.results.${S.leagueId}`;
+  const hit = LS.get(key);
+  if (!force && hit && Date.now() - hit.at < 3600 * 1000) return hit;
+
+  const upTo = Math.min(S.seasonType === 'regular' ? S.week : 1, (S.playoffStart || 15) - 1);
+  const weeks = await Promise.all(
+    Array.from({ length: Math.max(0, upTo) }, (_, i) =>
+      api(`/v1/league/${S.leagueId}/matchups/${i + 1}`).catch(() => [])));
+
+  const games = [];
+  weeks.forEach((rows, i) => {
+    const byMatch = {};
+    (rows || []).forEach(r => (byMatch[r.matchup_id] = byMatch[r.matchup_id] || []).push(r));
+    Object.values(byMatch).forEach(pair => {
+      if (pair.length !== 2) return;
+      const [a, b] = pair;
+      if (!a.points && !b.points) return;      // not played
+      games.push({ week: i + 1, a: { id: a.roster_id, pts: a.points || 0 },
+                                b: { id: b.roster_id, pts: b.points || 0 } });
+    });
+  });
+
+  const rec = { at: Date.now(), games };
+  LS.set(key, rec);
+  return rec;
+}
+
+/* Simple Rating System — the piece that makes a power ranking worth reading.
+
+   A plain points-scored average treats every win as equal. SRS doesn't: a team's
+   rating is the average of (margin + the rating of the opponent it played), solved
+   by iterating until the numbers settle. So if the last-place team clobbers the
+   first-place team, that result carries far more weight than the same margin against
+   a weak side — beating a strong opponent lifts you, and losing to a weak one hurts.
+   Ratings are centred on zero, so +12 means twelve points a week better than an
+   average team in this league. */
+function srsRatings(games, ids) {
+  const sched = {};
+  ids.forEach(t => sched[t] = []);
+  games.forEach(g => {
+    if (!sched[g.a.id] || !sched[g.b.id]) return;
+    sched[g.a.id].push({ opp: g.b.id, margin: g.a.pts - g.b.pts });
+    sched[g.b.id].push({ opp: g.a.id, margin: g.b.pts - g.a.pts });
+  });
+
+  const rating = {};
+  ids.forEach(t => rating[t] = 0);
+  for (let pass = 0; pass < 400; pass++) {
+    const next = {};
+    ids.forEach(t => {
+      const list = sched[t];
+      next[t] = list.length
+        ? list.reduce((s, g) => s + g.margin + rating[g.opp], 0) / list.length
+        : 0;
+    });
+    const mean = ids.reduce((s, t) => s + next[t], 0) / (ids.length || 1);
+    /* Damped update. Taking `next` wholesale is a plain Jacobi sweep, which on a
+       sparse schedule oscillates between two states forever and lands on whichever
+       one the last pass happened to produce — it gave demonstrably wrong ratings.
+       Blending half the previous pass in kills the oscillation; the fixed point is
+       unchanged, we just actually reach it. */
+    ids.forEach(t => rating[t] = 0.5 * rating[t] + 0.5 * (next[t] - mean));
+  }
+  return rating;
+}
+
+/* All-play record: each week, how many of the other teams would you have beaten with
+   the score you actually put up? It strips out schedule luck completely — you can go
+   4-6 while outscoring most of the league most weeks, and this catches that. */
+function allPlayRecords(games, ids) {
+  const byWeek = {};
+  games.forEach(g => {
+    const w = byWeek[g.week] = byWeek[g.week] || {};
+    w[g.a.id] = g.a.pts;
+    w[g.b.id] = g.b.pts;
+  });
+
+  const out = {};
+  ids.forEach(t => out[t] = { w: 0, l: 0, t: 0 });
+  Object.values(byWeek).forEach(week => {
+    const entries = Object.entries(week);
+    entries.forEach(([t, pts]) => {
+      entries.forEach(([o, opts]) => {
+        if (t === o) return;
+        if (pts > opts) out[t].w++;
+        else if (pts < opts) out[t].l++;
+        else out[t].t++;
+      });
+    });
+  });
+  ids.forEach(t => {
+    const r = out[t], n = r.w + r.l + r.t;
+    r.pct = n ? (r.w + r.t * 0.5) / n : null;
+  });
+  return out;
+}
+
 /* Power rankings.
 
-   Record alone is a poor guide early — an 8-team league produces flukes, and in a
-   league where every team makes the playoffs, wins matter even less. Roster strength
-   (the best legal lineup a team can field) is the more honest signal, so it carries
-   the most weight, with record and points scored as corroboration. Before anyone has
-   played, it's roster strength alone. */
+   Weighted toward what a team has actually proven against real opposition, with the
+   roster kept in the mix as a forward-looking check:
+
+     40%  SRS            — margin, adjusted for who you played
+     25%  all-play %     — how you'd fare against the whole league, schedule luck removed
+     25%  roster strength — what you can field going forward
+     10%  actual record   — it does still count for something
+
+   Before any games, it's roster strength alone. Record gets the smallest share on
+   purpose: in an 8-team league where all 8 make the playoffs, wins are noisy. */
 function powerRankings() {
   if (!S.teamsInLeague.length) return [];
 
+  const ids = S.teamsInLeague.map(t => t.rosterId);
+  const games = (S.results && S.results.games) || [];
+  const srs = games.length ? srsRatings(games, ids) : null;
+  const ap = games.length ? allPlayRecords(games, ids) : null;
+
   const rows = S.teamsInLeague.map(t => {
-    const games = (t.wins || 0) + (t.losses || 0) + (t.ties || 0);
+    const played = (t.wins || 0) + (t.losses || 0) + (t.ties || 0);
+    const apr = ap ? ap[t.rosterId] : null;
+    const winPct = played ? ((t.wins || 0) + (t.ties || 0) * 0.5) / played : null;
     return {
       team: t,
       strength: rosterStrength(t.players).total,
-      winPct: games ? ((t.wins || 0) + (t.ties || 0) * 0.5) / games : null,
+      srs: srs ? srs[t.rosterId] : null,
+      allPlay: apr ? apr.pct : null,
+      allPlayRec: apr,
+      winPct,
+      // Positive luck means the schedule has been kinder than the scores deserved.
+      luck: (winPct != null && apr && apr.pct != null) ? winPct - apr.pct : null,
       pf: t.fpts || 0,
-      games,
+      games: played,
     };
   });
 
-  const norm = (key) => {
+  const norm = key => {
     const vals = rows.map(r => r[key]).filter(v => v != null);
+    if (!vals.length) return () => 0.5;
     const lo = Math.min(...vals), hi = Math.max(...vals);
     return r => (r[key] == null || hi === lo) ? 0.5 : (r[key] - lo) / (hi - lo);
   };
-  const nS = norm('strength'), nW = norm('winPct'), nP = norm('pf');
-  const played = rows.some(r => r.games > 0);
+  const nS = norm('strength'), nR = norm('srs'), nA = norm('allPlay'), nW = norm('winPct');
+  const hasGames = games.length > 0;
   const anyRosters = rows.some(r => r.strength > 0);
 
+  /* How much should results be trusted yet?
+
+     After two weeks, SRS and all-play are mostly noise — and if the schedule hasn't
+     even connected every team to every other, SRS literally cannot compare one half
+     of the league with the other. So the results-based weights ramp in with games
+     played and reach full strength around six, with roster strength taking up the
+     slack until then. Early on this is a projection; by midseason it's a measurement. */
+  const gamesPerTeam = ids.length ? (games.length * 2) / ids.length : 0;
+  const conf = Math.min(1, gamesPerTeam / 6);
+  const W = { srs: 0.40 * conf, ap: 0.25 * conf, rec: 0.10 * conf };
+  W.str = 1 - (W.srs + W.ap + W.rec);
+
   rows.forEach(r => {
-    // Nothing drafted and nothing played: every score would be an identical 50,
-    // which reads as broken rather than as "no data". Leave it blank instead.
-    r.score = (!played && !anyRosters) ? null
-      : played ? 100 * (0.55 * nS(r) + 0.28 * nW(r) + 0.17 * nP(r))
+    r.score = (!hasGames && !anyRosters) ? null
+      : hasGames ? 100 * (W.srs * nR(r) + W.ap * nA(r) + W.str * nS(r) + W.rec * nW(r))
         : 100 * nS(r);
+    r.confidence = conf;
   });
   if (rows.some(r => r.score != null)) rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
   rows.forEach((r, i) => r.rank = i + 1);
   return rows;
+}
+
+/* Head-to-head, plus the season's most lopsided and closest results. */
+function leagueRecords() {
+  const games = (S.results && S.results.games) || [];
+  if (!games.length) return null;
+  const nameOf = {};
+  S.teamsInLeague.forEach(t => nameOf[t.rosterId] = t.name);
+
+  const h2h = {};
+  games.forEach(g => {
+    const key = [g.a.id, g.b.id].sort((x, y) => x - y).join('-');
+    const rec = h2h[key] = h2h[key] || { a: Math.min(g.a.id, g.b.id), b: Math.max(g.a.id, g.b.id), aw: 0, bw: 0 };
+    const winner = g.a.pts > g.b.pts ? g.a.id : g.b.pts > g.a.pts ? g.b.id : null;
+    if (winner === rec.a) rec.aw++;
+    else if (winner === rec.b) rec.bw++;
+  });
+
+  const withMargin = games.map(g => {
+    const hi = g.a.pts >= g.b.pts ? g.a : g.b;
+    const lo = g.a.pts >= g.b.pts ? g.b : g.a;
+    return { week: g.week, winner: nameOf[hi.id], loser: nameOf[lo.id],
+             hi: hi.pts, lo: lo.pts, margin: hi.pts - lo.pts };
+  });
+  const byMargin = withMargin.slice().sort((x, y) => y.margin - x.margin);
+  const byScore = withMargin.slice().sort((x, y) => y.hi - x.hi);
+
+  return {
+    h2h: Object.values(h2h).map(r => ({ ...r, aName: nameOf[r.a], bName: nameOf[r.b] })),
+    blowouts: byMargin.slice(0, 3),
+    nailbiters: byMargin.slice(-3).reverse(),
+    highest: byScore.slice(0, 3),
+    lowest: byScore.slice(-3).reverse(),
+    count: games.length,
+  };
 }
 
 /* Strength of schedule for the teams in YOUR league: how strong are the fantasy
@@ -789,6 +1039,97 @@ function draftCountdown() {
   const days = Math.floor(ms / 86400000);
   const hours = Math.floor((ms % 86400000) / 3600000);
   return { past: false, days, hours, when: new Date(S.draftStart) };
+}
+
+/* How good was the draft?
+
+   Two separate questions, kept apart on purpose. "Value" is whether you beat the
+   room's consensus — did players fall to you past their average draft position. "Team"
+   is whether the roster you ended up with is any good. They come apart often: you can
+   win every pick on value and still field a lopsided team. */
+function draftRecap() {
+  if (!S.pickLog.length || !S.myRoster.length) return null;
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+
+  const picks = S.myRoster.map(id => {
+    const p = byId[id];
+    if (!p) return null;
+    const at = S.pickLog.indexOf(id) + 1;
+    // Positive = he lasted past where the market said he'd go.
+    const value = (p.adp != null && at > 0) ? at - p.adp : null;
+    return { p, at, round: at > 0 ? Math.ceil(at / Math.max(2, S.teams)) : null, value };
+  }).filter(Boolean).sort((a, b) => a.at - b.at);
+
+  const scored = picks.filter(x => x.value != null);
+  const netValue = scored.reduce((s, x) => s + x.value, 0);
+
+  // Where the roster sits against the rest of the league, if we know their rosters.
+  const mine = rosterStrength(S.myRoster).total;
+  const others = S.teamsInLeague.filter(t => !t.isMine).map(t => rosterStrength(t.players).total);
+  const better = others.filter(v => v > mine).length;
+
+  return {
+    picks,
+    best: scored.slice().sort((a, b) => b.value - a.value).slice(0, 3),
+    worst: scored.slice().sort((a, b) => a.value - b.value).slice(0, 3),
+    netValue,
+    avgValue: scored.length ? netValue / scored.length : null,
+    strength: mine,
+    leagueRank: others.length ? better + 1 : null,
+    ofTeams: others.length ? others.length + 1 : null,
+    holes: (() => {
+      const { want, have } = slotDemand();
+      return POSITIONS.filter(pos => (want[pos] || 0) > (have[pos] || 0))
+        .map(pos => `${pos} (${have[pos] || 0}/${want[pos]})`);
+    })(),
+  };
+}
+
+/* The weekly digest: one screen that answers the three questions that actually come
+   up every week, instead of making you assemble them from three tabs. */
+function weeklyDigest() {
+  const roster = myScoredRoster();
+  if (!roster.length) return null;
+  const opt = optimalLineup(roster);
+  const startIds = new Set(opt.rows.map(r => r.player && r.player.id).filter(Boolean));
+
+  // Swaps: bench players the optimizer wants starting over somebody currently in.
+  const swaps = [];
+  if (S.sleeperStarters.length) {
+    const current = new Set(S.sleeperStarters);
+    opt.rows.forEach(r => {
+      if (r.player && !current.has(r.player.id)) {
+        const out = roster.filter(p => current.has(p.id) && !startIds.has(p.id))
+          .sort((a, b) => a.pts - b.pts)[0];
+        swaps.push({ in: r.player, out: out || null, slot: r.slot });
+      }
+    });
+  }
+
+  // Waiver targets: trending adds nobody in the league owns, worth more than my worst
+  // startable player.
+  const owned = new Set();
+  S.teamsInLeague.forEach(t => t.players.forEach(id => owned.add(id)));
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+  const worstStarter = opt.rows.map(r => r.player).filter(Boolean)
+    .sort((a, b) => a.pts - b.pts)[0];
+
+  const targets = ((S.trending && S.trending.adds) || [])
+    .map(t => ({ ...byId[t.player_id], count: t.count, id: t.player_id }))
+    .filter(p => p.name && !owned.has(p.id))
+    .slice(0, 6);
+
+  // Drop candidates: my own players below replacement who aren't starting.
+  const drops = opt.bench
+    .filter(p => p.pos !== 'K' && p.pos !== 'DEF')
+    .map(p => byId[p.id] || p)
+    .filter(p => p.vor != null && p.vor < 0)
+    .sort((a, b) => a.vor - b.vor)
+    .slice(0, 4);
+
+  return { total: opt.total, swaps, targets, drops, worstStarter, bench: opt.bench };
 }
 
 /* ====================== 5b. DRAFT INTELLIGENCE ========================== */
@@ -1574,31 +1915,52 @@ function renderDossier() {
   }
 }
 
+/* Power rankings and standings show the SAME columns from the SAME rows, differing
+   only in sort order — power score versus record. One cell builder, so the two tables
+   can't drift apart. */
+function teamRowHtml(r, pos) {
+  const t = r.team;
+  const luck = r.luck;
+  return `
+    <td class="c-rank n">${pos}</td>
+    <td class="c-player">${t.name}${t.isMine ? ' <span class="you">you</span>' : ''}</td>
+    <td class="n" data-label="W-L">${t.wins}-${t.losses}${t.ties ? '-' + t.ties : ''}</td>
+    <td class="n" data-label="PF">${r.pf ? fmt(r.pf, 1) : '—'}</td>
+    <td class="n" data-label="PA">${t.fptsAgainst ? fmt(t.fptsAgainst, 1) : '—'}</td>
+    <td class="n" data-label="SRS">${r.srs == null ? '—' :
+      (r.srs > 0 ? '+' : '') + fmt(r.srs, 1)}</td>
+    <td class="n" data-label="All-play">${r.allPlayRec && r.allPlayRec.pct != null
+      ? `${r.allPlayRec.w}-${r.allPlayRec.l}` : '—'}</td>
+    <td class="n ${luck == null ? '' : luck > 0.12 ? 'val-up' : luck < -0.12 ? 'val-down' : ''}"
+        data-label="Luck">${luck == null ? '—' : (luck > 0 ? '+' : '') + fmt(luck * 100, 0)}</td>
+    <td class="n c-vor" data-label="Power">${r.score == null ? '—' : fmt(r.score, 0)}</td>`;
+}
+
 function renderPower() {
   const tb = $('#powerTable tbody');
   tb.innerHTML = '';
   const rows = powerRankings();
   if (!rows.length) {
-    tb.innerHTML = '<tr><td colspan="6" class="empty">Load the league on the Setup tab, ' +
-      'then press Load league rosters.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="9" class="empty">Import your league on the Settings ' +
+      'tab — rosters and results load with it.</td></tr>';
+    $('#powerNote').textContent = '';
     return;
   }
+  const played = rows.some(r => r.games) || (S.results && S.results.games.length);
   const anyPlayers = rows.some(r => r.team.players.length);
-  $('#powerNote').textContent = anyPlayers
-    ? (rows.some(r => r.games) ? 'Roster strength 55%, record 28%, points scored 17%.'
-      : 'Nobody has played yet, so this is pure roster strength.')
-    : 'Every roster is empty until the draft runs — this fills in on its own afterwards.';
+  const conf = rows[0] ? (rows[0].confidence || 0) : 0;
+  $('#powerNote').textContent = played
+    ? (conf >= 1
+      ? 'SRS 40%, all-play 25%, roster strength 25%, record 10%.'
+      : `Only ${Math.round(conf * 6)} game(s) each so far, so results carry ` +
+        `${Math.round(conf * 75)}% of the score and the roster carries the rest. ` +
+        `Full weighting from six games.`)
+    : anyPlayers ? 'Nothing played yet, so this is roster strength alone.'
+      : 'Every roster is empty until the draft — this fills in on its own afterwards.';
 
   rows.forEach(r => {
-    const t = r.team;
-    const tr = el('tr', t.isMine ? 'mine' : '');
-    tr.innerHTML = `
-      <td class="c-rank n">${r.rank}</td>
-      <td class="c-player">${t.name}${t.isMine ? ' <span class="you">you</span>' : ''}</td>
-      <td class="n" data-label="Rec">${t.wins}-${t.losses}${t.ties ? '-' + t.ties : ''}</td>
-      <td class="n" data-label="Roster">${r.strength ? fmt(r.strength, 0) : '—'}</td>
-      <td class="n" data-label="PF">${r.pf ? fmt(r.pf, 1) : '—'}</td>
-      <td class="n c-vor" data-label="Power">${r.score == null ? '—' : fmt(r.score, 0)}</td>`;
+    const tr = el('tr', r.team.isMine ? 'mine' : '');
+    tr.innerHTML = teamRowHtml(r, r.rank);
     tb.append(tr);
   });
 }
@@ -1606,27 +1968,167 @@ function renderPower() {
 function renderStandings() {
   const tb = $('#standTable tbody');
   tb.innerHTML = '';
-  if (!S.teamsInLeague.length) {
-    tb.innerHTML = '<tr><td colspan="6" class="empty">Not loaded.</td></tr>';
+  const rows = powerRankings();
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="empty">Not loaded.</td></tr>';
+    $('#standNote').textContent = '';
     return;
   }
-  const rows = S.teamsInLeague.slice().sort((a, b) =>
-    (b.wins - a.wins) || (b.fpts - a.fpts));
-  const played = rows.some(t => t.wins || t.losses || t.ties);
-  $('#standNote').textContent = played ? '' :
-    'No games played yet, so this is just the roster order.';
+  const played = rows.some(r => r.games);
+  $('#standNote').textContent = played
+    ? 'Sorted by record, then points. Same columns as the power table above, ordered by what the league table says rather than by merit.'
+    : 'No games played yet, so this is just the roster order.';
 
-  rows.forEach((t, i) => {
-    const tr = el('tr', t.isMine ? 'mine' : '');
-    const diff = t.fpts - t.fptsAgainst;
+  rows.slice()
+    .sort((a, b) => (b.team.wins - a.team.wins) || (b.pf - a.pf))
+    .forEach((r, i) => {
+      const tr = el('tr', r.team.isMine ? 'mine' : '');
+      tr.innerHTML = teamRowHtml(r, i + 1);
+      tb.append(tr);
+    });
+}
+
+function renderRecords() {
+  const box = $('#records');
+  box.innerHTML = '';
+  const rec = leagueRecords();
+  if (!rec) {
+    box.innerHTML = '<p class="empty">No games played in this league yet. Head-to-head ' +
+      'records and the season\'s best and worst results build up from week one.</p>';
+    return;
+  }
+  const block = (title, items, fmtLine) => {
+    const g = el('div', 'rec-block');
+    g.append(el('h3', '', title));
+    items.forEach(it => {
+      const line = el('div', 'rec-line');
+      line.innerHTML = fmtLine(it);
+      g.append(line);
+    });
+    box.append(g);
+  };
+
+  block('Biggest blowouts', rec.blowouts, b =>
+    `<span>${b.winner} <em>over</em> ${b.loser}</span>` +
+    `<span class="rec-num">${fmt(b.margin, 1)}</span>`);
+  block('Closest games', rec.nailbiters, b =>
+    `<span>${b.winner} <em>over</em> ${b.loser}</span>` +
+    `<span class="rec-num">${fmt(b.margin, 1)}</span>`);
+  block('Highest scores', rec.highest, b =>
+    `<span>${b.winner} <em>wk ${b.week}</em></span><span class="rec-num">${fmt(b.hi, 1)}</span>`);
+  block('Head to head', rec.h2h.filter(h => h.aw || h.bw).slice(0, 8), h =>
+    `<span>${h.aName} <em>v</em> ${h.bName}</span><span class="rec-num">${h.aw}&ndash;${h.bw}</span>`);
+}
+
+function renderRecap() {
+  const box = $('#recap');
+  box.innerHTML = '';
+  const r = draftRecap();
+  if (!r) {
+    box.innerHTML = '<p class="empty">Fills in once you\'ve made picks — either by ' +
+      'syncing a Sleeper draft or marking them yourself on the board.</p>';
+    return;
+  }
+  const head = el('div', 'recap-head');
+  head.innerHTML =
+    `<div class="recap-fig"><span>${r.netValue > 0 ? '+' : ''}${fmt(r.netValue, 0)}</span>` +
+    `<em>picks of value gained</em></div>` +
+    (r.leagueRank ? `<div class="recap-fig"><span>${r.leagueRank}<small>/${r.ofTeams}</small></span>` +
+      `<em>roster strength in the league</em></div>` : '') +
+    `<div class="recap-fig"><span>${fmt(r.strength, 0)}</span><em>projected starting lineup</em></div>`;
+  box.append(head);
+
+  if (r.holes.length) {
+    const h = el('p', 'note');
+    h.innerHTML = `Still short at <strong>${r.holes.join(', ')}</strong>.`;
+    box.append(h);
+  }
+
+  const pair = (title, list, cls) => {
+    if (!list.length) return;
+    const g = el('div', 'rec-block');
+    g.append(el('h3', '', title));
+    list.forEach(x => {
+      const line = el('div', 'rec-line');
+      line.innerHTML = `<span>${x.p.name} ${posChip(x.p.pos)} <em>rd ${x.round}</em></span>` +
+        `<span class="rec-num ${cls}">${x.value > 0 ? '+' : ''}${fmt(x.value, 0)}</span>`;
+      g.append(line);
+    });
+    box.append(g);
+  };
+  pair('Best value', r.best, 'val-up');
+  pair('Reaches', r.worst, 'val-down');
+}
+
+function renderDigest() {
+  const box = $('#digest');
+  box.innerHTML = '';
+  const d = weeklyDigest();
+  if (!d) {
+    box.innerHTML = '<p class="empty">Add players to your roster and this becomes your ' +
+      'weekly to-do list: who to start, who to claim, who to cut.</p>';
+    return;
+  }
+  const sec = (title, body) => {
+    const g = el('div', 'rec-block');
+    g.append(el('h3', '', title));
+    if (typeof body === 'string') { const p = el('p', 'note'); p.innerHTML = body; g.append(p); }
+    else body.forEach(n => g.append(n));
+    box.append(g);
+  };
+
+  sec('Start', d.swaps.length
+    ? d.swaps.map(s => {
+      const line = el('div', 'rec-line');
+      line.innerHTML = `<span><strong>${s.in.name}</strong> ${posChip(s.in.pos)} into ${s.slot}` +
+        (s.out ? ` <em>for ${s.out.name}</em>` : '') + `</span>` +
+        `<span class="rec-num">${fmt(s.in.pts, 1)}</span>`;
+      return line;
+    })
+    : `Your lineup is already optimal at <strong>${fmt(d.total, 1)}</strong> projected.`);
+
+  sec('Claim', d.targets.length
+    ? d.targets.map(p => {
+      const line = el('div', 'rec-line');
+      line.innerHTML = `<span>${p.name} ${posChip(p.pos)} <em>${p.team || ''}</em></span>` +
+        `<span class="rec-num">${(p.count / 1000).toFixed(0)}k adds</span>`;
+      return line;
+    })
+    : 'Nothing trending that your league doesn\'t already own.');
+
+  sec('Cut', d.drops.length
+    ? d.drops.map(p => {
+      const line = el('div', 'rec-line');
+      line.innerHTML = `<span>${p.name} ${posChip(p.pos)}</span>` +
+        `<span class="rec-num val-down">${fmt(p.vor, 0)} VOR</span>`;
+      return line;
+    })
+    : 'Nobody on your bench is below replacement level.');
+}
+
+function renderAccuracy() {
+  const tb = $('#accTable tbody');
+  tb.innerHTML = '';
+  const a = accuracySummary();
+  if (!a) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Press the button to measure ' +
+      'projections against what actually happened.</td></tr>';
+    return;
+  }
+  $('#accNote').innerHTML = `Weeks ${a.weeks.join(', ')} of ${a.season}, ` +
+    `${a.n} player-weeks projected at 5+ points, scored under your league's rules. ` +
+    `<strong>Bias</strong> is actual minus projected: negative means the projections ran hot.`;
+
+  a.rows.forEach(r => {
+    const tr = el('tr', 'row-' + r.pos);
     tr.innerHTML = `
-      <td class="c-rank n">${i + 1}</td>
-      <td class="c-player">${t.name}${t.isMine ? ' <span class="you">you</span>' : ''}</td>
-      <td class="n" data-label="W-L">${t.wins}-${t.losses}${t.ties ? '-' + t.ties : ''}</td>
-      <td class="n" data-label="PF">${t.fpts ? fmt(t.fpts, 1) : '—'}</td>
-      <td class="n" data-label="PA">${t.fptsAgainst ? fmt(t.fptsAgainst, 1) : '—'}</td>
-      <td class="n ${diff > 0 ? 'val-up' : diff < 0 ? 'val-down' : ''}" data-label="Diff">${
-        (t.fpts || t.fptsAgainst) ? (diff > 0 ? '+' : '') + fmt(diff, 1) : '—'}</td>`;
+      <td class="c-pos">${posChip(r.pos)}</td>
+      <td class="n" data-label="n">${r.n}</td>
+      <td class="n" data-label="Proj">${fmt(r.avgProj, 1)}</td>
+      <td class="n" data-label="Actual">${fmt(r.avgActual, 1)}</td>
+      <td class="n ${r.bias < -0.5 ? 'val-down' : r.bias > 0.5 ? 'val-up' : ''}" data-label="Bias">${
+        (r.bias > 0 ? '+' : '') + fmt(r.bias, 1)} (${(r.biasPct > 0 ? '+' : '') + fmt(r.biasPct, 0)}%)</td>
+      <td class="n" data-label="Avg miss">${fmt(r.mae, 1)}</td>`;
     tb.append(tr);
   });
 }
@@ -1701,6 +2203,7 @@ function renderLeague() {
   renderStandings();
   renderMatchups();
   renderLeagueSos();
+  renderRecords();
 }
 
 function renderTeams() {
@@ -1743,6 +2246,8 @@ function refreshViews() {
   renderBoard();
   renderRecommend();
   renderRuns();
+  renderRecap();
+  renderDigest();
   renderDraftSide();
   renderLineup();
   renderTeams();
@@ -2017,6 +2522,7 @@ async function loadLeagueTeams() {
     // running; both fail quietly and the UI explains the blank.
     S.fantasySchedule = await loadFantasySchedule(false);
     S.matchups = await api(`/v1/league/${S.leagueId}/matchups/${S.week}`).catch(() => []);
+    S.results = await loadResults(false);
 
     renderTeams();
     renderLeague();
@@ -2058,6 +2564,22 @@ $('#clearTrade').onclick = () => {
   renderTradePickers(); renderTradeResult();
 };
 $('#faPos').onchange = e => { S.faPos = e.target.value; renderFreeAgents(); };
+
+$('#loadAccuracy').onclick = async () => {
+  const season = $('#accSeason').value;
+  say('#accStatus', `Downloading ${ACCURACY_WEEKS.length} weeks of projections and results for ${season}…`);
+  try {
+    S.accuracy = await loadAccuracy(season, false);
+    renderAccuracy();
+    const a2 = accuracySummary();
+    say('#accStatus', a2 && a2.n
+      ? `Compared ${a2.n} player-weeks.`
+      : `No overlapping data for ${season} — projections or results are missing.`,
+      a2 && a2.n ? 'ok' : 'err');
+  } catch (e) {
+    say('#accStatus', `Could not measure accuracy: ${e.message}`, 'err');
+  }
+};
 
 $('#loadTrending').onclick = async () => {
   say('#teamsStatus', 'Asking Sleeper what the platform is doing…');

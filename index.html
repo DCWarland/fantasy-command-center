@@ -36,15 +36,26 @@
     <dl id="dossier" class="facts"></dl>
   </div>
 
-  <div class="two-up">
+  <div class="stacked">
     <div class="sheet">
       <h2>Power rankings</h2>
       <p id="powerNote" class="note"></p>
+      <details class="explain">
+        <summary>How the power score is built</summary>
+        <p class="note"><strong>SRS</strong> is a rating in points per week, centred on zero,
+          that adjusts every margin for who you played &mdash; so the last-place team
+          hammering the first-place team counts for far more than the same margin against a
+          weak side, and losing narrowly to the best team barely hurts.
+          <strong>All-play</strong> is your record if you'd played every team every week,
+          which removes schedule luck entirely. <strong>Luck</strong> is how far your real
+          record sits above or below that; positive means the fixture list has been kind.</p>
+      </details>
       <div class="table-wrap">
         <table id="powerTable">
-          <thead><tr><th>#</th><th>Team</th><th class="num-col">Rec</th>
-            <th class="num-col">Roster</th><th class="num-col">PF</th>
-            <th class="num-col">Power</th></tr></thead>
+          <thead><tr><th>#</th><th>Team</th><th class="num-col">W-L</th>
+            <th class="num-col">PF</th><th class="num-col">PA</th>
+            <th class="num-col">SRS</th><th class="num-col">All-play</th>
+            <th class="num-col">Luck</th><th class="num-col">Power</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -57,7 +68,8 @@
         <table id="standTable">
           <thead><tr><th>#</th><th>Team</th><th class="num-col">W-L</th>
             <th class="num-col">PF</th><th class="num-col">PA</th>
-            <th class="num-col">Diff</th></tr></thead>
+            <th class="num-col">SRS</th><th class="num-col">All-play</th>
+            <th class="num-col">Luck</th><th class="num-col">Power</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -83,6 +95,14 @@
         <tbody></tbody>
       </table>
     </div>
+  </div>
+
+  <div class="sheet">
+    <h2>Records &amp; history</h2>
+    <p class="note">Builds up from week one: head-to-head, the season's most lopsided
+      results and its closest. Your 2025 league carries no history &mdash; it was created
+      but never played, so there are no scores to draw on.</p>
+    <div id="records" class="rec-cols"></div>
   </div>
 
 </section>
@@ -165,6 +185,13 @@
         <h2>Top at each position</h2>
         <div id="byPosition" class="by-pos"></div>
       </div>
+
+      <div class="card">
+        <h2>Draft report card</h2>
+        <p class="note">Value against the room's consensus, and whether the roster you
+          actually ended up with is any good &mdash; two different questions.</p>
+        <div id="recap" class="rec-cols one"></div>
+      </div>
     </aside>
 
   </div>
@@ -172,6 +199,13 @@
 
 <!-- ============================ LINEUP ============================ -->
 <section id="tab-lineup" class="panel">
+
+  <div class="sheet">
+    <h2>This week, in three decisions</h2>
+    <p class="note">Start, claim, cut &mdash; assembled from your roster, the optimizer and
+      what the rest of Sleeper is doing, so you don't have to gather it yourself.</p>
+    <div id="digest" class="rec-cols"></div>
+  </div>
 
   <div class="card">
     <h2>My roster</h2>
@@ -298,6 +332,33 @@
         usually the earliest public sign a player's role has changed. <b>free</b> means nobody
         in your league owns him yet.</p>
       <div id="trendingBody" class="trend"></div>
+    </div>
+
+    <div class="card">
+      <h2>Were the projections any good?</h2>
+      <p id="accNote" class="note">Measures these projections against what actually
+        happened, scored under your league's rules. Four sampled weeks &mdash; enough to
+        spot a systematic lean without downloading a whole season.</p>
+      <p class="note">Players who were projected but barely played are <em>counted</em>, not
+        excluded. That's deliberate: if you started him on the strength of a projection and
+        got nothing, the projection cost you the week, and a figure that quietly drops those
+        cases would flatter itself.</p>
+      <div class="row">
+        <select id="accSeason">
+          <option value="2025">2025 season</option>
+          <option value="2026">2026 season</option>
+        </select>
+        <button id="loadAccuracy" class="primary">Measure</button>
+        <span id="accStatus" class="status"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="accTable">
+          <thead><tr><th>Pos</th><th class="num-col">n</th><th class="num-col">Proj</th>
+            <th class="num-col">Actual</th><th class="num-col">Bias</th>
+            <th class="num-col">Avg miss</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
