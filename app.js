@@ -109,6 +109,11 @@ const S = {
   sos: {},           // {team: {bye, all, post}} strength of schedule, 1-10
   teamsInLeague: [], // every roster in the league, for comparing
   compareA: null, compareB: null,
+  tradeA: [], tradeB: [],          // player_ids selected in the trade analyser
+  playoffWeeks: null,              // [rows wk15, rows wk16, rows wk17]
+  rankMode: LS.get('rankMode', 'season'),   // 'season' | 'playoffs'
+  trending: null,                  // {adds:[{player_id,count}], drops:[...]}
+  pickLog: LS.get('pickLog', []),  // player_ids in the order they were drafted
   drafted: LS.get('drafted', {}),      // player_id -> 'me' | 'other'
   myRoster: LS.get('myRoster', []),    // player_ids on my team
   sleeperStarters: [],                 // what Sleeper currently has me starting
@@ -121,7 +126,7 @@ const S = {
 
 function save() {
   ['username', 'userId', 'leagueId', 'leagueName', 'scoring', 'slots', 'teams', 'mySlot', 'rounds',
-    'drafted', 'myRoster'].forEach(k => LS.set(k, S[k]));
+    'drafted', 'myRoster', 'pickLog', 'rankMode'].forEach(k => LS.set(k, S[k]));
 }
 
 function say(sel, msg, kind = '') {
@@ -132,6 +137,22 @@ function say(sel, msg, kind = '') {
 
 const elig = slot => SLOT_ELIG[slot] || [slot];
 const startingSlots = () => S.slots.filter(s => !BENCH_SLOTS.has(s));
+
+/* Marking picks goes through here so the ORDER is recorded, not just the fact. Run
+   detection and "what round did I take my kicker" both need the sequence. */
+function markDrafted(id, who) {
+  S.drafted[id] = who;
+  if (!S.pickLog.includes(id)) S.pickLog.push(id);
+  if (who === 'me' && !S.myRoster.includes(id)) S.myRoster.push(id);
+  save(); refreshViews();
+}
+
+function unmarkDrafted(id) {
+  delete S.drafted[id];
+  S.pickLog = S.pickLog.filter(i => i !== id);
+  S.myRoster = S.myRoster.filter(i => i !== id);
+  save(); refreshViews();
+}
 
 /* -- Sleeper API ---------------------------------------------------------- */
 
@@ -224,6 +245,53 @@ async function loadWeek(week, force) {
   };
   LS.set(key, rec);
   return rec;
+}
+
+// The adp_* keys only matter on the season feed; dropping them keeps the weekly
+// caches small enough to sit comfortably in browser storage.
+function stripAdp(stats) {
+  const out = {};
+  Object.keys(stats).forEach(k => { if (!k.startsWith('adp')) out[k] = stats[k]; });
+  return out;
+}
+
+/* Projections for the fantasy playoff weeks only. Ranking by these instead of the
+   full season answers a different and often more useful question: not "who scores
+   most this year" but "who scores most in the three weeks that decide it". */
+async function loadPlayoffWeeks(force) {
+  const key = `cache.playoff.${S.season}`;
+  const hit = LS.get(key);
+  if (!force && hit && Date.now() - hit.at < CACHE_MS) return hit;
+
+  const weeks = await Promise.all(PLAYOFF_WEEKS.map(w =>
+    api(projUrl(S.season, w)).then(raw => raw.map(trimRow)
+      .filter(r => r.stats.pts_half_ppr != null && POSITIONS.includes(r.pos))
+      .map(r => ({ id: r.id, stats: stripAdp(r.stats) })))));
+
+  const rec = { at: Date.now(), weeks };
+  LS.set(key, rec);
+  return rec;
+}
+
+// Total projected points across weeks 15-17 under the current scoring rules.
+function playoffTotals() {
+  if (!S.playoffWeeks) return null;
+  const tot = {};
+  S.playoffWeeks.forEach(rows => rows.forEach(r => {
+    tot[r.id] = (tot[r.id] || 0) + scoreStats(r.stats, S.scoring).pts;
+  }));
+  return tot;
+}
+
+/* Who the whole Sleeper platform is adding and dropping right now. This is the
+   earliest widely-available signal that a player's role has changed — usually
+   hours ahead of it being obvious from a box score. */
+async function loadTrending() {
+  const [adds, drops] = await Promise.all([
+    api('/v1/players/nfl/trending/add?lookback_hours=24&limit=25').catch(() => []),
+    api('/v1/players/nfl/trending/drop?lookback_hours=24&limit=15').catch(() => []),
+  ]);
+  return { adds: adds || [], drops: drops || [] };
 }
 
 /* ---- the NFL schedule, and strength of schedule ------------------------
@@ -487,6 +555,19 @@ function gradeFor(rank) {
 
 function buildBoard() {
   const players = scoreRows(S.seasonRows);
+
+  /* In playoff mode a player's value becomes his weeks 15-17 total, and everything
+     downstream — replacement level, VOR, tiers, grades — is recomputed on that
+     basis. Swapping the number in before replacement level is calculated is what
+     keeps the whole board internally consistent. */
+  if (S.rankMode === 'playoffs') {
+    const tot = playoffTotals();
+    if (tot) {
+      players.forEach(p => { p.seasonPts = p.pts; p.pts = tot[p.id] ?? 0; });
+      players.sort((a, b) => b.pts - a.pts);
+    }
+  }
+
   const repl = replacementLevels(players);
   players.forEach(p => p.vor = p.pts - (repl[p.pos] ?? 0));
   POSITIONS.forEach(p => assignTiers(players.filter(x => x.pos === p)));
@@ -584,6 +665,156 @@ function myScoredRoster() {
     // Not in this week's feed: bye week, injured out, or not projected to play.
     return { id, name: d.name || `#${id}`, pos: d.pos || '?', team: d.team || '', opp: 'BYE/—', inj: '', pts: 0, exact: true };
   });
+}
+
+/* ====================== 5b. DRAFT INTELLIGENCE ========================== */
+
+/* Which overall pick are we on, and when do I pick again?
+
+   The interesting question during a draft is never "who is best" — the board
+   already answers that — it's "who won't be here when I come back". */
+function pickContext() {
+  const pickNo = Object.keys(S.drafted).length + 1;
+  const mine = myPickNumbers();
+  const nextMine = mine.find(n => n >= pickNo) || null;
+  const afterThat = mine.find(n => n > (nextMine || 0)) || null;
+  // If I'm on the clock, what matters is surviving until my following pick.
+  const waitUntil = (nextMine === pickNo ? afterThat : nextMine) || pickNo + S.teams;
+  return { pickNo, nextMine, afterThat, waitUntil, onClock: nextMine === pickNo };
+}
+
+// What my roster still needs, counting only slots dedicated to one position.
+function slotDemand() {
+  const want = {};
+  startingSlots().forEach(s => {
+    const e = elig(s);
+    if (e.length === 1) want[e[0]] = (want[e[0]] || 0) + 1;
+  });
+  const have = {};
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+  S.myRoster.forEach(id => { const p = byId[id]; if (p) have[p.pos] = (have[p.pos] || 0) + 1; });
+  return { want, have };
+}
+
+/* The pick recommender.
+
+   For each available player, estimate the chance he's gone before my next pick from
+   his average draft position, then weigh that against what he's worth. A player I
+   can get later is worth less NOW than an equally good player who will vanish — so
+   the ranking metric is roughly "points of value I lose by passing":
+
+       urgency = value over replacement  x  probability he's gone  x  need
+
+   The probability is a logistic curve on how far past his ADP my next pick sits.
+   ADP is a crowd average, not a forecast of your specific league, so this is a
+   nudge on top of VOR rather than an oracle. */
+function recommendations(limit = 5) {
+  const ctx = pickContext();
+  const { want, have } = slotDemand();
+
+  const list = S.board
+    .filter(p => !S.drafted[p.id])
+    .slice(0, 150)
+    .map(p => {
+      const gone = p.adp == null ? 0.5 : 1 / (1 + Math.exp(-(ctx.waitUntil - p.adp) / 5));
+      const w = want[p.pos] || 0, h = have[p.pos] || 0;
+      const short = w - h;
+      // Nudge toward unfilled slots, away from positions already stacked deep.
+      const needMul = short > 0 ? 1.3 : (h >= w + 2 ? 0.65 : 1);
+      return {
+        p, gone, short, needMul,
+        urgency: Math.max(0, p.vor) * gone * needMul,
+      };
+    })
+    .sort((a, b) => b.urgency - a.urgency);
+
+  return { ...ctx, list: list.slice(0, limit) };
+}
+
+/* Positional runs: when the room empties a position faster than usual, the cost of
+   waiting rises sharply. Reads the ordered pick log rather than the drafted set. */
+function positionalRuns(window = 8) {
+  const recent = S.pickLog.slice(-window)
+    .map(id => (S.dir[id] || {}).pos)
+    .filter(p => POSITIONS.includes(p));
+  const counts = {};
+  recent.forEach(p => counts[p] = (counts[p] || 0) + 1);
+  const hot = Object.keys(counts)
+    .filter(p => counts[p] >= Math.max(3, Math.ceil(recent.length / 2)))
+    .sort((a, b) => counts[b] - counts[a]);
+  return { n: recent.length, counts, hot };
+}
+
+/* Roster construction problems that a points total won't show you. */
+function rosterWarnings() {
+  const out = [];
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+  const mine = S.myRoster.map(id => byId[id]).filter(Boolean);
+  if (!mine.length) return out;
+
+  // Several players on one NFL team share a bye AND a game script — if that
+  // offence has a bad day, so does your whole week.
+  const byTeam = {};
+  mine.forEach(p => (byTeam[p.team] = byTeam[p.team] || []).push(p));
+  Object.keys(byTeam).forEach(t => {
+    const list = byTeam[t];
+    if (list.length >= 3) {
+      out.push({
+        level: 'warn',
+        text: `${list.length} of your players are on ${t} (${list.map(p => p.name).join(', ')}). ` +
+          `They share a bye week and rise and fall with the same offence.`,
+      });
+    }
+  });
+
+  // Kickers and defences are near-interchangeable, so spending an early pick is waste.
+  mine.forEach(p => {
+    if (p.pos !== 'K' && p.pos !== 'DEF') return;
+    const idx = S.pickLog.indexOf(p.id);
+    if (idx < 0) return;
+    const round = Math.ceil((idx + 1) / Math.max(2, S.teams));
+    if (round <= S.rounds - 3) {
+      out.push({
+        level: 'warn',
+        text: `${p.pos} ${p.name} went in round ${round}. Kickers and defences vary so little ` +
+          `that they belong in your last couple of rounds — that pick could have been depth.`,
+      });
+    }
+  });
+
+  const { want, have } = slotDemand();
+  const round = Math.ceil(S.pickLog.length / Math.max(2, S.teams));
+  POSITIONS.forEach(pos => {
+    const w = want[pos] || 0, h = have[pos] || 0;
+    if (w && !h && round >= 7) {
+      out.push({ level: 'warn', text: `Still no ${pos} and you're into round ${round}.` });
+    }
+    if (w && h >= w + 2 && (pos === 'QB' || pos === 'K' || pos === 'DEF')) {
+      out.push({
+        level: 'info',
+        text: `${h} ${pos}s on a roster that starts ${w}. In a ${S.teams}-team league the ` +
+          `backup is replaceable off waivers — that's a spent roster spot.`,
+      });
+    }
+  });
+
+  return out;
+}
+
+/* Trade evaluation: rebuild both rosters with the players swapped and re-solve each
+   optimal lineup. What matters is the change in points you can actually START, which
+   is why a deal that looks even on paper can still be lopsided. */
+function evaluateTrade(teamA, teamB, sendA, sendB) {
+  const after = (team, out, inc) =>
+    team.players.filter(id => !out.includes(id)).concat(inc);
+  return {
+    aBefore: rosterStrength(teamA.players).total,
+    aAfter: rosterStrength(after(teamA, sendA, sendB)).total,
+    bBefore: rosterStrength(teamB.players).total,
+    bAfter: rosterStrength(after(teamB, sendB, sendA)).total,
+  };
 }
 
 /* ============================== 6. RENDERING ============================= */
@@ -724,21 +955,174 @@ function renderBoard() {
     const cell = tr.lastElementChild;
     if (status) {
       const undo = el('button', 'tiny', 'undo');
-      undo.onclick = () => { delete S.drafted[p.id]; S.myRoster = S.myRoster.filter(i => i !== p.id); save(); refreshViews(); };
+      undo.onclick = () => unmarkDrafted(p.id);
       cell.append(undo);
     } else {
       const mine = el('button', 'tiny primary', 'me');
-      mine.onclick = () => {
-        S.drafted[p.id] = 'me';
-        if (!S.myRoster.includes(p.id)) S.myRoster.push(p.id);
-        save(); refreshViews();
-      };
+      mine.onclick = () => markDrafted(p.id, 'me');
       const gone = el('button', 'tiny', 'gone');
-      gone.onclick = () => { S.drafted[p.id] = 'other'; save(); refreshViews(); };
+      gone.onclick = () => markDrafted(p.id, 'other');
       cell.append(mine, gone);
     }
     tb.append(tr);
   });
+}
+
+function renderRecommend() {
+  const box = $('#recommend');
+  box.innerHTML = '';
+  if (!S.board.length) { box.innerHTML = '<p class="empty">Waiting for projections.</p>'; return; }
+
+  const r = recommendations(5);
+  $('#recContext').textContent = r.onClock
+    ? `you're on the clock at ${r.pickNo}`
+    : `pick ${r.pickNo} · you're up at ${r.nextMine || '—'}`;
+
+  r.list.forEach((row, i) => {
+    const p = row.p;
+    const line = el('div', 'rec' + (i === 0 ? ' top' : ''));
+    const pct = Math.round(row.gone * 100);
+    const why = [];
+    if (row.short > 0) why.push(`fills your ${p.pos} slot`);
+    if (pct >= 65) why.push(`${pct}% likely gone by pick ${r.waitUntil}`);
+    else if (pct <= 30) why.push(`only ${pct}% likely gone by ${r.waitUntil} — you can wait`);
+    else why.push(`${pct}% chance he's gone by ${r.waitUntil} — a coin flip`);
+    if (row.needMul < 1) why.push('you are already deep here');
+
+    line.innerHTML =
+      `<div class="rec-head"><span class="grade ${gradeClass(p.grade)}">${p.grade}</span>` +
+      `<b>${p.name}</b> ${posChip(p.pos)} <span class="rec-team">${p.team}</span></div>` +
+      `<div class="rec-why">VOR ${fmt(p.vor, 0)} · ADP ${p.adp ? fmt(p.adp, 0) : '—'} · ${why.join(' · ')}</div>`;
+    box.append(line);
+  });
+}
+
+function renderRuns() {
+  const box = $('#runs');
+  box.innerHTML = '';
+  const r = positionalRuns(8);
+  if (!r.n) { box.innerHTML = '<span class="hint">No picks logged yet.</span>'; return; }
+
+  const parts = POSITIONS.filter(p => r.counts[p]).map(p =>
+    `<span class="run ${r.hot.includes(p) ? 'hot' : ''}">${posChip(p)} ${r.counts[p]}</span>`);
+  box.innerHTML = `<div class="run-row">${parts.join('')}</div>` +
+    `<p class="hint">Last ${r.n} picks. ` +
+    (r.hot.length
+      ? `<b>${r.hot.join(' and ')} ${r.hot.length > 1 ? 'are' : 'is'} going fast</b> — waiting will cost you more than usual.`
+      : 'No run in progress.') + '</p>';
+}
+
+function renderWarnings() {
+  const box = $('#warnings');
+  box.innerHTML = '';
+  const list = rosterWarnings();
+  if (!list.length) {
+    box.innerHTML = '<p class="hint">Nothing to flag' +
+      (S.myRoster.length ? '.' : ' — no players on your roster yet.') + '</p>';
+    return;
+  }
+  list.forEach(w => {
+    const d = el('div', 'warn ' + w.level);
+    d.textContent = w.text;
+    box.append(d);
+  });
+}
+
+function renderTrending() {
+  const box = $('#trendingBody');
+  box.innerHTML = '';
+  if (!S.trending) { box.innerHTML = '<p class="empty">Not loaded yet.</p>'; return; }
+
+  const owned = new Set();
+  S.teamsInLeague.forEach(t => t.players.forEach(id => owned.add(id)));
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+
+  [['adds', 'Being added'], ['drops', 'Being dropped']].forEach(([key, title]) => {
+    const rows = (S.trending[key] || []).slice(0, 12);
+    if (!rows.length) return;
+    const grp = el('div', 'trend-grp');
+    grp.append(el('h3', '', title));
+    rows.forEach(t => {
+      const d = S.dir[t.player_id] || {};
+      const p = byId[t.player_id];
+      const line = el('div', 'trend-line');
+      const taken = owned.has(t.player_id);
+      line.innerHTML =
+        `<span class="trend-name">${d.name || '#' + t.player_id}` +
+        `${d.pos ? ' ' + posChip(d.pos) : ''} <span class="rec-team">${d.team || ''}</span></span>` +
+        `<span class="trend-meta">${(t.count / 1000).toFixed(1)}k` +
+        (p ? ` · VOR ${fmt(p.vor, 0)}` : '') +
+        (taken ? ' · <span class="val-down">owned</span>' : ' · <span class="val-up">free</span>') +
+        `</span>`;
+      grp.append(line);
+    });
+    box.append(grp);
+  });
+}
+
+function renderTradePickers() {
+  const find = id => S.teamsInLeague.find(t => String(t.rosterId) === String(id));
+  const A = find(S.compareA), B = find(S.compareB);
+  const byId = {};
+  S.board.forEach(p => byId[p.id] = p);
+
+  [['#tradeListA', A, 'tradeA'], ['#tradeListB', B, 'tradeB']].forEach(([sel, team, key]) => {
+    const box = $(sel);
+    box.innerHTML = '';
+    if (!team) return;
+    box.append(el('h3', '', team.name));
+    if (!team.players.length) {
+      box.append(el('p', 'hint', 'Empty roster.'));
+      return;
+    }
+    team.players
+      .map(id => byId[id])
+      .filter(Boolean)
+      .sort((a, b) => b.pts - a.pts)
+      .forEach(p => {
+        const lab = el('label', 'trade-pick');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = S[key].includes(p.id);
+        cb.onchange = () => {
+          S[key] = cb.checked ? S[key].concat([p.id]) : S[key].filter(i => i !== p.id);
+          renderTradeResult();
+        };
+        lab.append(cb);
+        const span = el('span');
+        span.innerHTML = `${p.name} ${posChip(p.pos)} <span class="rec-team">${fmt(p.pts, 0)}</span>`;
+        lab.append(span);
+        box.append(lab);
+      });
+  });
+}
+
+function renderTradeResult() {
+  const out = $('#tradeResult');
+  const find = id => S.teamsInLeague.find(t => String(t.rosterId) === String(id));
+  const A = find(S.compareA), B = find(S.compareB);
+  if (!A || !B || (!S.tradeA.length && !S.tradeB.length)) {
+    out.innerHTML = '';
+    return;
+  }
+  const r = evaluateTrade(A, B, S.tradeA, S.tradeB);
+  const dA = r.aAfter - r.aBefore, dB = r.bAfter - r.bBefore;
+  const sign = v => (v > 0 ? '+' : '') + fmt(v, 0);
+  const cls = v => v > 0.5 ? 'val-up' : v < -0.5 ? 'val-down' : '';
+
+  let verdict;
+  if (Math.abs(dA - dB) < 5) verdict = 'Close to even.';
+  else if (dA > dB) verdict = `<b>${A.name}</b> wins this trade.`;
+  else verdict = `<b>${B.name}</b> wins this trade.`;
+
+  out.innerHTML =
+    `<div class="trade-side"><b>${A.name}</b> ${fmt(r.aBefore, 0)} → ${fmt(r.aAfter, 0)} ` +
+    `<span class="${cls(dA)}">${sign(dA)}</span></div>` +
+    `<div class="trade-side"><b>${B.name}</b> ${fmt(r.bBefore, 0)} → ${fmt(r.bAfter, 0)} ` +
+    `<span class="${cls(dB)}">${sign(dB)}</span></div>` +
+    `<div class="trade-verdict">${verdict} Change is in points you can actually start, ` +
+    `so a player who only upgrades your bench shows as roughly zero.</div>`;
 }
 
 function renderDraftSide() {
@@ -876,11 +1260,7 @@ function renderLineup() {
       <td class="c-proj n" data-label="Proj">${fmt(p.pts)}</td>
       <td class="c-actions"></td>`;
     const drop = el('button', 'tiny', 'remove');
-    drop.onclick = () => {
-      S.myRoster = S.myRoster.filter(i => i !== p.id);
-      delete S.drafted[p.id];
-      save(); refreshViews();
-    };
+    drop.onclick = () => unmarkDrafted(p.id);
     tr.lastElementChild.append(drop);
     bt.append(tr);
   });
@@ -1038,9 +1418,13 @@ function renderSchedule() {
 function renderTeams() {
   fillTeamSelects();
   renderCompare();
+  renderTradePickers();
+  renderTradeResult();
   renderFreeAgents();
   renderSchedule();
   renderByeWarnings();
+  renderWarnings();
+  renderTrending();
 }
 
 // Stacking byes is a real way to lose a week, so flag it on your own roster.
@@ -1068,6 +1452,8 @@ function renderByeWarnings() {
 function refreshViews() {
   buildBoard();
   renderBoard();
+  renderRecommend();
+  renderRuns();
   renderDraftSide();
   renderLineup();
   renderTeams();
@@ -1217,15 +1603,20 @@ async function syncPicks() {
   if (!S.draftId) return;
   try {
     const picks = await api(`/v1/draft/${S.draftId}/picks`);
-    // Sleeper is the source of truth while syncing, so rebuild from its picks.
+    // Sleeper is the source of truth while syncing, so rebuild from its picks —
+    // in pick_no order, because run detection depends on the sequence.
     S.drafted = {};
     S.myRoster = [];
-    picks.forEach(p => {
-      if (!p.player_id) return;
-      const mine = (p.picked_by && p.picked_by === S.userId) || (p.draft_slot === S.mySlot);
-      S.drafted[p.player_id] = mine ? 'me' : 'other';
-      if (mine) S.myRoster.push(p.player_id);
-    });
+    S.pickLog = [];
+    picks.slice()
+      .sort((a, b) => (a.pick_no || 0) - (b.pick_no || 0))
+      .forEach(p => {
+        if (!p.player_id) return;
+        const mine = (p.picked_by && p.picked_by === S.userId) || (p.draft_slot === S.mySlot);
+        S.drafted[p.player_id] = mine ? 'me' : 'other';
+        S.pickLog.push(p.player_id);
+        if (mine) S.myRoster.push(p.player_id);
+      });
     save();
     refreshViews();
     say('#draftStatus', `${picks.length} picks in. You have ${S.myRoster.length}.`, 'ok');
@@ -1340,9 +1731,58 @@ $('#loadSched').onclick = async () => {
   }
 };
 
-$('#cmpA').onchange = e => { S.compareA = e.target.value; renderCompare(); };
-$('#cmpB').onchange = e => { S.compareB = e.target.value; renderCompare(); };
+// Changing a side of the comparison invalidates whatever was ticked for the trade.
+$('#cmpA').onchange = e => {
+  S.compareA = e.target.value; S.tradeA = [];
+  renderCompare(); renderTradePickers(); renderTradeResult();
+};
+$('#cmpB').onchange = e => {
+  S.compareB = e.target.value; S.tradeB = [];
+  renderCompare(); renderTradePickers(); renderTradeResult();
+};
+$('#clearTrade').onclick = () => {
+  S.tradeA = []; S.tradeB = [];
+  renderTradePickers(); renderTradeResult();
+};
 $('#faPos').onchange = e => { S.faPos = e.target.value; renderFreeAgents(); };
+
+$('#loadTrending').onclick = async () => {
+  say('#teamsStatus', 'Asking Sleeper what the platform is doing…');
+  try {
+    S.trending = await loadTrending();
+    renderTrending();
+    say('#teamsStatus', `${S.trending.adds.length} trending adds, ${S.trending.drops.length} drops.`, 'ok');
+  } catch (e) {
+    say('#teamsStatus', `Trending unavailable: ${e.message}`, 'err');
+  }
+};
+
+/* -- ranking mode -------------------------------------------------------- */
+
+function updateModeNote() {
+  $('#modeNote').textContent = S.rankMode === 'playoffs'
+    ? 'Ranking by projected points in weeks 15–17 only.'
+    : '';
+}
+
+$('#rankMode').onchange = async e => {
+  S.rankMode = e.target.value;
+  save();
+  if (S.rankMode === 'playoffs' && !S.playoffWeeks) {
+    say('#dataStatus', 'Loading weeks 15–17…');
+    try {
+      S.playoffWeeks = (await loadPlayoffWeeks(false)).weeks;
+      say('#dataStatus', 'Playoff-week projections loaded.', 'ok');
+    } catch (err) {
+      say('#dataStatus', `Could not load playoff weeks: ${err.message}`, 'err');
+      S.rankMode = 'season';
+      $('#rankMode').value = 'season';
+      save();
+    }
+  }
+  refreshViews();
+  updateModeNote();
+};
 
 /* -- tabs ---------------------------------------------------------------- */
 
@@ -1371,6 +1811,15 @@ async function bootData(force) {
       console.warn('schedule unavailable', e);
     }
 
+    // Two tiny requests; the waiver signal is worth having ready up front.
+    try { S.trending = await loadTrending(); } catch (e) { console.warn('trending unavailable', e); }
+
+    // Only pay for the playoff weeks if that ranking mode is actually selected.
+    if (S.rankMode === 'playoffs' && !S.playoffWeeks) {
+      try { S.playoffWeeks = (await loadPlayoffWeeks(force)).weeks; }
+      catch (e) { S.rankMode = 'season'; console.warn('playoff weeks unavailable', e); }
+    }
+
     const age = Math.round((Date.now() - season.at) / 60000);
     say('#dataStatus', `${S.seasonRows.length} players projected for ${S.season}; week ${S.week} ` +
       `loaded; schedule for ${Object.keys(S.sos).length} teams. Cached ${age} min ago.`, 'ok');
@@ -1393,6 +1842,8 @@ async function init() {
   renderSetupNumbers();
   renderSlotEditor();
   renderScoringEditor();
+  $('#rankMode').value = S.rankMode;
+  updateModeNote();
 
   try {
     const st = await api('/v1/state/nfl');

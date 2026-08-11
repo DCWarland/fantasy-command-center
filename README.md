@@ -7,22 +7,21 @@ files — no server, no database, no build step — so it works on GitHub Pages 
 
 | File | What it is |
 |---|---|
-| `index.html` | The page structure: three tabs and the tables/forms inside them. |
+| `index.html` | The page structure: four tabs and the tables/forms inside them. |
 | `style.css` | Purely how it looks. Safe to fiddle with. |
 | `app.js` | All the logic: fetching data, scoring, draft values, the optimizer. |
 | `test.js`, `run-tests.sh` | Checks the logic still works. Not needed on the website — don't upload them if you'd rather not. |
 
-## Putting it on GitHub Pages
+## It's already live
 
-1. Create a repo on GitHub (public is fine — there's nothing secret in here).
-2. Upload all three files to the **root** of the repo, not inside a folder.
-3. In the repo: **Settings → Pages**. Under "Build and deployment", set
-   **Source** to `Deploy from a branch`, **Branch** to `main` and folder `/ (root)`.
-   Click Save.
-4. Wait a minute, then open `https://<your-username>.github.io/<repo-name>/`.
+<https://dcwarland.github.io/fantasy-command-center/>
 
-To check it worked: the badge at the top of the page should show the current NFL
-season and week. If it says `offline`, the projection download failed — open your
+GitHub Pages serves whatever is on `main`, so to publish a change: edit the file,
+then `git add -A && git commit -m "what changed" && git push`. Pages rebuilds itself
+in under a minute.
+
+To check a deploy worked: the badge at the top of the page should show the current
+NFL season and your league name. If it says `offline`, the projection download failed — open your
 browser's developer console (**View → Developer → JavaScript Console** in Chrome)
 and look for a red error.
 
@@ -49,6 +48,20 @@ on Sleeper, skip the import and set the slots and scoring by hand.
 a Sleeper draft, click *Find my draft* then tick *Auto-sync* and it crosses off picks
 every 5 seconds by itself. Otherwise click `me` / `gone` to track picks manually.
 
+Three things on this tab do the actual thinking for you:
+
+- **Take next** ranks by how much value you'd lose by passing, not by who's best.
+  A player you can still get in two rounds is worth less right now than an equally
+  good one who'll be gone — so it multiplies value over replacement by the chance
+  he disappears before your next pick (estimated from average draft position),
+  nudged toward slots you haven't filled.
+- **Runs** watches the last 8 picks. When a position empties faster than usual the
+  cost of waiting jumps, and that's when to reach a round early.
+- **Rank: playoff weeks 15–17** re-ranks the entire board — replacement levels,
+  VOR, tiers and grades all recomputed — on the three weeks that decide your season
+  instead of the full year. Detroit at 1.0 season / 7.4 playoffs versus Indianapolis
+  at 7.4 / 1.3 is a genuine pick-changer.
+
 **Lineup tab** — *Pull my roster from Sleeper*, set the week, and it shows the
 highest-scoring legal lineup you can field, plus how many points that beats your
 currently-set lineup by.
@@ -61,7 +74,15 @@ currently-set lineup by.
   your draft's leftovers before the season and your waiver-wire board after it.
 - **Strength of schedule** for all 32 NFL teams, with the fantasy playoff weeks
   (15&ndash;17) broken out separately, plus every team's bye week.
-- **Your bye weeks**, flagged when three or more of your players are idle together.
+- **Trade analyser** — tick who each side sends; both rosters are rebuilt and
+  re-solved, so the number shown is the change in points you can actually *start*.
+  A player who only upgrades your bench shows as roughly zero, which is the point.
+- **Trending across Sleeper** — what every user on the platform is adding and
+  dropping in the last 24 hours, marked free or owned in your league. Usually the
+  earliest public sign that a player's role has changed.
+- **Roster health** — problems a points total won't show you: three players on one
+  NFL team (shared bye, shared game script), a kicker spent too early, a position
+  you've stacked deeper than you can start, and bye weeks piling up.
 
 It works on a phone. Below 820px the tables become cards rather than scrolling
 sideways, so the draft board is usable one-handed while you're actually drafting.
@@ -135,7 +156,7 @@ against live data. Run it after any change to `app.js`:
 sh run-tests.sh            # add --fresh to re-download the projection data
 ```
 
-You want to see `*** ALL CHECKS PASSED ***` at the bottom. 161 checks currently,
+You want to see `*** ALL CHECKS PASSED ***` at the bottom. 213 checks currently,
 covering:
 
 - Every projected player, both feeds: under Sleeper's default rules the scoring
@@ -152,3 +173,11 @@ covering:
 - Strength-of-schedule ranking, including that tied schedules get equal ratings.
 - Roster comparison: elite rosters beating weak ones, unstartable players excluded
   from the total, empty and unknown-player rosters not crashing.
+- Snake pick maths feeding the recommender: on the clock the wait runs to your next
+  pick, off it to your upcoming one.
+- That average draft position genuinely separates two otherwise identical players,
+  which is the only reason the recommender differs from the plain board.
+- Playoff mode summing three weeks correctly and rebuilding replacement levels on
+  that basis rather than reusing season figures.
+- The trade analyser: giving your best player away must cost you and help them,
+  and trading a player for himself must be exactly neutral.

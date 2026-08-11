@@ -97,7 +97,12 @@
         <input id="search" type="text" placeholder="Search player…" autocomplete="off">
         <span id="posFilter" class="chips"></span>
         <label class="check"><input id="hideDrafted" type="checkbox" checked> Hide drafted</label>
+        <select id="rankMode" title="What to rank by">
+          <option value="season">Rank: full season</option>
+          <option value="playoffs">Rank: playoff weeks 15–17</option>
+        </select>
       </div>
+      <p id="modeNote" class="status"></p>
       <details class="explain">
         <summary>What the columns mean</summary>
         <p class="hint">Sorted by <b>VOR</b> — value over replacement, i.e. how many points this
@@ -127,6 +132,13 @@
 
     <aside class="side">
       <div class="card">
+        <h2>Take next <span id="recContext" class="badge small"></span></h2>
+        <p class="hint">Ranked by how much value you'd lose by passing: worth times the
+          chance he's gone before your next pick, nudged toward slots you still need.</p>
+        <div id="recommend" class="rec-list"></div>
+      </div>
+
+      <div class="card">
         <h2>Live sync</h2>
         <p class="hint">If you're drafting on Sleeper, this reads the real draft every 5 seconds and
           crosses off picks automatically.</p>
@@ -145,6 +157,7 @@
       <div class="card">
         <h2>Needs &amp; runs</h2>
         <div id="needs" class="needs"></div>
+        <div id="runs"></div>
       </div>
 
       <div class="card">
@@ -226,6 +239,19 @@
     <div id="compareBody"></div>
   </div>
 
+  <div class="card">
+    <h2>Trade analyser</h2>
+    <p class="hint">Tick who each side sends, using the two teams picked above. Both rosters
+      are rebuilt and re-solved, so the change shown is in points you can actually
+      <em>start</em> — which is why a deal that looks even on paper often isn't.</p>
+    <div class="trade-grid">
+      <div id="tradeListA" class="trade-list"></div>
+      <div id="tradeListB" class="trade-list"></div>
+    </div>
+    <div class="row"><button id="clearTrade">Clear selections</button></div>
+    <div id="tradeResult" class="trade-result"></div>
+  </div>
+
   <div class="teams-layout">
     <div class="card">
       <h2>Best available in your league <span id="faCount" class="badge small"></span></h2>
@@ -264,11 +290,22 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>Your bye weeks</h2>
-    <p class="hint">Three or more of your players idle in the same week is how you lose a
-      winnable matchup. Highlighted when it gets to that.</p>
-    <div id="byeWarn" class="needs"></div>
+  <div class="teams-layout">
+    <div class="card">
+      <h2>Trending across Sleeper <button id="loadTrending" class="tiny">Refresh</button></h2>
+      <p class="hint">What every Sleeper user is adding and dropping in the last 24 hours —
+        usually the earliest public sign a player's role has changed. <b>free</b> means nobody
+        in your league owns him yet.</p>
+      <div id="trendingBody" class="trend"></div>
+    </div>
+
+    <div class="card">
+      <h2>Roster health</h2>
+      <p class="hint">Construction problems a points total won't show you: too many players
+        on one NFL team, positions spent too early, and bye weeks stacking up.</p>
+      <div id="warnings" class="warn-list"></div>
+      <div id="byeWarn" class="needs"></div>
+    </div>
   </div>
 
 </section>

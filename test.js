@@ -613,4 +613,198 @@ smoke('buildBoard with no schedule', buildBoard);
 ok('board still builds without schedule data', S.board.length > 400);
 ok('players get null byes rather than undefined', S.board[0].bye === null);
 
+/* ---- 10. the six new features ---- */
+hdr('stripAdp keeps stats, drops the ADP columns');
+ok('adp keys removed, others kept', (function () {
+  var s = stripAdp({ adp_ppr: 5, adp_2qb: 7, rec: 90, pts_half_ppr: 250 });
+  return s.adp_ppr === undefined && s.adp_2qb === undefined && s.rec === 90 && s.pts_half_ppr === 250;
+})(), JSON.stringify(stripAdp({ adp_ppr: 5, rec: 90 })));
+
+hdr('pick log records order, not just the fact');
+S.slots = DEFAULT_SLOTS.slice(); S.teams = 8; S.mySlot = 3; S.rounds = 15;
+S.drafted = {}; S.myRoster = []; S.pickLog = [];
+buildBoard();
+var p1 = S.board[0].id, p2 = S.board[1].id, p3 = S.board[2].id;
+markDrafted(p1, 'other'); markDrafted(p2, 'other'); markDrafted(p3, 'me');
+ok('pick log is in draft order', S.pickLog.join(',') === [p1, p2, p3].join(','));
+ok('my pick landed on my roster', S.myRoster.join(',') === p3);
+ok('others did not', S.myRoster.length === 1);
+unmarkDrafted(p2);
+ok('undo removes from the log', S.pickLog.join(',') === [p1, p3].join(','));
+ok('undo removes from drafted', S.drafted[p2] === undefined);
+markDrafted(p1, 'other');
+ok('re-marking does not duplicate the log entry',
+  S.pickLog.filter(function (i) { return i === p1; }).length === 1);
+
+hdr('pick context: when am I up again?');
+S.drafted = {}; S.myRoster = []; S.pickLog = [];
+S.teams = 8; S.mySlot = 3; S.rounds = 15;
+print('  my picks (slot 3 of 8): ' + myPickNumbers().slice(0, 5).join(', '));
+var c0 = pickContext();
+ok('before any pick, I am up at 3', c0.pickNo === 1 && c0.nextMine === 3 && !c0.onClock,
+  JSON.stringify(c0));
+S.drafted = { a: 'other', b: 'other' };
+var c1 = pickContext();
+ok('with 2 gone I am on the clock at 3', c1.pickNo === 3 && c1.onClock, JSON.stringify(c1));
+ok('on the clock, the wait runs to my NEXT pick (14)', c1.waitUntil === 14, 'waitUntil=' + c1.waitUntil);
+S.drafted = { a: 'other', b: 'other', c: 'other', d: 'other' };
+var c2 = pickContext();
+ok('off the clock, the wait runs to my upcoming pick', c2.pickNo === 5 && c2.waitUntil === 14,
+  JSON.stringify(c2));
+
+hdr('the pick recommender');
+S.drafted = {}; S.myRoster = []; S.pickLog = [];
+buildBoard();
+var rec = recommendations(5);
+ok('returns the requested number', rec.list.length === 5);
+ok('sorted by urgency, highest first', rec.list.every(function (r, i) {
+  return i === 0 || rec.list[i - 1].urgency >= r.urgency;
+}));
+ok('every entry carries a probability between 0 and 1',
+  rec.list.every(function (r) { return r.gone >= 0 && r.gone <= 1; }));
+print('  top 3: ' + rec.list.slice(0, 3).map(function (r) {
+  return r.p.name + ' (VOR ' + r.p.vor.toFixed(0) + ', ADP ' + (r.p.adp ? r.p.adp.toFixed(0) : '-') +
+    ', ' + Math.round(r.gone * 100) + '% gone, urgency ' + r.urgency.toFixed(0) + ')';
+}).join('; '));
+
+// The whole point: ADP has to actually move the answer.
+var early = { pos: 'RB', vor: 100, adp: 2, id: 'x' };
+var late = { pos: 'RB', vor: 100, adp: 200, id: 'y' };
+var gonep = function (p, wait) { return 1 / (1 + Math.exp(-(wait - p.adp) / 5)); };
+ok('a player already past his ADP is likely gone', gonep(early, 14) > 0.9, gonep(early, 14).toFixed(2));
+ok('a player far from his ADP is likely available', gonep(late, 14) < 0.05, gonep(late, 14).toFixed(3));
+ok('equal players are separated by ADP, not coin flips', gonep(early, 14) > gonep(late, 14) + 0.8);
+
+var drafted = {};
+S.board.slice(0, 30).forEach(function (p) { drafted[p.id] = 'other'; });
+S.drafted = drafted;
+var rec2 = recommendations(5);
+ok('drafted players are never recommended',
+  rec2.list.every(function (r) { return !S.drafted[r.p.id]; }));
+
+hdr('positional run detection');
+S.drafted = {}; S.myRoster = []; S.pickLog = [];
+var rbs = S.board.filter(function (p) { return p.pos === 'RB'; }).slice(0, 6);
+var wrs = S.board.filter(function (p) { return p.pos === 'WR'; }).slice(0, 2);
+S.pickLog = wrs.concat(rbs).map(function (p) { return p.id; });
+var runs = positionalRuns(8);
+print('  counts over last 8: ' + JSON.stringify(runs.counts) + '  hot=' + JSON.stringify(runs.hot));
+ok('counts the window correctly', runs.n === 8 && runs.counts.RB === 6 && runs.counts.WR === 2);
+ok('flags the position that is running', runs.hot.indexOf('RB') >= 0);
+ok('does not flag a position that is not', runs.hot.indexOf('WR') < 0);
+S.pickLog = [];
+ok('empty log reports nothing rather than crashing', positionalRuns(8).n === 0);
+
+hdr('roster construction warnings');
+S.drafted = {}; S.myRoster = []; S.pickLog = [];
+// three players from one NFL team
+var teamCounts = {};
+S.board.forEach(function (p) { (teamCounts[p.team] = teamCounts[p.team] || []).push(p); });
+var stackTeam = Object.keys(teamCounts).filter(function (t) { return teamCounts[t].length >= 3; })[0];
+S.myRoster = teamCounts[stackTeam].slice(0, 3).map(function (p) { return p.id; });
+var w1 = rosterWarnings();
+ok('flags three players on one NFL team',
+  w1.some(function (w) { return w.text.indexOf(stackTeam) >= 0 && w.text.indexOf('bye week') >= 0; }),
+  JSON.stringify(w1.map(function (w) { return w.text.slice(0, 50); })));
+
+// a kicker taken far too early
+var k = S.board.filter(function (p) { return p.pos === 'K'; })[0];
+S.myRoster = [k.id];
+S.pickLog = [k.id];
+S.teams = 8; S.rounds = 15;
+var w2 = rosterWarnings();
+ok('flags a kicker taken in round 1',
+  w2.some(function (w) { return /round 1\b/.test(w.text) && w.text.indexOf('K ') >= 0; }),
+  JSON.stringify(w2.map(function (w) { return w.text.slice(0, 60); })));
+
+// same kicker in the last round should NOT be flagged
+S.pickLog = new Array(14 * 8).fill('filler').concat([k.id]);
+ok('does not flag a kicker taken at the end',
+  !rosterWarnings().some(function (w) { return w.text.indexOf('belong in your last') >= 0; }));
+
+S.myRoster = []; S.pickLog = [];
+ok('an empty roster produces no warnings', rosterWarnings().length === 0);
+
+hdr('trade analyser');
+S.slots = DEFAULT_SLOTS.slice(); S.teams = 8;
+S.drafted = {}; buildBoard();
+var eliteIds = S.board.slice(0, 12).map(function (p) { return p.id; });
+var scrubIds = S.board.slice(240, 252).map(function (p) { return p.id; });
+var TA = { rosterId: 1, name: 'Elite', players: eliteIds, starters: [], isMine: true };
+var TB = { rosterId: 2, name: 'Scrubs', players: scrubIds, starters: [], isMine: false };
+
+// Trade the best player away for the worst one.
+var tr = evaluateTrade(TA, TB, [eliteIds[0]], [scrubIds[0]]);
+print('  A ' + tr.aBefore.toFixed(0) + '->' + tr.aAfter.toFixed(0) +
+      '   B ' + tr.bBefore.toFixed(0) + '->' + tr.bAfter.toFixed(0));
+ok('giving away your best player hurts you', tr.aAfter < tr.aBefore);
+ok('receiving him helps them', tr.bAfter > tr.bBefore);
+
+// A player who only improves the bench should barely move the needle.
+var evenTr = evaluateTrade(TA, TB, [], []);
+ok('an empty trade changes nothing',
+  evenTr.aAfter === evenTr.aBefore && evenTr.bAfter === evenTr.bBefore);
+
+// Swapping identical value both ways is near neutral.
+var swap = evaluateTrade(TA, TA, [eliteIds[0]], [eliteIds[0]]);
+ok('trading a player for himself is neutral', Math.abs(swap.aAfter - swap.aBefore) < 1e-9);
+
+hdr('playoff-weeks ranking mode');
+// Reuse week 1 as three identical "playoff" weeks: the totals must come out at
+// exactly 3x the weekly figure, which verifies the summing and the re-scoring.
+var pwRows = S.weekRows.map(function (r) { return { id: r.id, stats: stripAdp(r.stats) }; });
+S.playoffWeeks = [pwRows, pwRows, pwRows];
+var tot = playoffTotals();
+var sample = S.weekRows.filter(function (r) { return r.stats.pts_half_ppr > 15; })[0];
+var oneWeek = scoreStats(sample.stats, S.scoring).pts;
+ok('playoff total is the sum across the three weeks',
+  Math.abs(tot[sample.id] - oneWeek * 3) < 1e-6,
+  sample.name + ': ' + tot[sample.id].toFixed(2) + ' vs 3x' + oneWeek.toFixed(2));
+
+S.rankMode = 'playoffs';
+buildBoard();
+var top = S.board[0];
+ok('playoff mode reranks the board', top.seasonPts !== undefined);
+ok('playoff mode replaces pts with the playoff total',
+  Math.abs(top.pts - (tot[top.id] || 0)) < 1e-6);
+ok('the season figure is kept alongside', top.seasonPts > 0);
+ok('grades and tiers still assigned in playoff mode', top.grade && top.tier >= 1);
+ok('replacement level recomputed on the playoff basis, so VOR is smaller than season VOR',
+  top.pts < top.seasonPts, 'playoff ' + top.pts.toFixed(0) + ' vs season ' + top.seasonPts.toFixed(0));
+var pbOrder = S.board.every(function (p, i) { return i === 0 || S.board[i - 1].vor >= p.vor - 1e-9; });
+ok('board still sorted by VOR in playoff mode', pbOrder);
+
+S.rankMode = 'season'; S.playoffWeeks = null;
+buildBoard();
+ok('switching back restores season ranking', S.board[0].seasonPts === undefined);
+
+hdr('rendering the new panels');
+S.trending = {
+  adds: S.board.slice(0, 8).map(function (p, i) { return { player_id: p.id, count: 40000 - i * 3000 }; }),
+  drops: S.board.slice(50, 55).map(function (p, i) { return { player_id: p.id, count: 9000 - i * 500 }; }),
+};
+S.teamsInLeague = [TA, TB];
+S.compareA = '1'; S.compareB = '2';
+S.tradeA = [eliteIds[0]]; S.tradeB = [scrubIds[0]];
+smoke('renderRecommend', renderRecommend);
+smoke('renderRuns', renderRuns);
+smoke('renderWarnings', renderWarnings);
+smoke('renderTrending', renderTrending);
+smoke('renderTradePickers', renderTradePickers);
+smoke('renderTradeResult', renderTradeResult);
+smoke('refreshViews with everything populated', refreshViews);
+ok('recommendation panel got entries', document.querySelector('#recommend').children.length > 0);
+ok('trade result was written', String(document.querySelector('#tradeResult').innerHTML).indexOf('Elite') >= 0);
+ok('trending panel got entries', document.querySelector('#trendingBody').children.length > 0);
+
+hdr('new panels survive empty state');
+S.trending = null; S.teamsInLeague = []; S.tradeA = []; S.tradeB = [];
+S.myRoster = []; S.pickLog = []; S.drafted = {};
+smoke('renderTrending with no data', renderTrending);
+smoke('renderTradePickers with no teams', renderTradePickers);
+smoke('renderTradeResult with no teams', renderTradeResult);
+smoke('renderWarnings with no roster', renderWarnings);
+smoke('renderRuns with no picks', renderRuns);
+smoke('renderRecommend with no picks', renderRecommend);
+
 print('\n' + (FAILS === 0 ? '*** ALL CHECKS PASSED ***' : '*** ' + FAILS + ' CHECK(S) FAILED ***'));
