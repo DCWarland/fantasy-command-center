@@ -67,8 +67,15 @@ then editable, and any edit instantly re-ranks the draft board. If your league i
 on Sleeper, skip the import and set the slots and scoring by hand.
 
 **Draft Board tab** — sorted by VOR (see below), not by raw projected points. During
-a Sleeper draft, click *Find my draft* then tick *Auto-sync* and it crosses off picks
-every 5 seconds by itself. Otherwise click `me` / `gone` to track picks manually.
+a Sleeper draft it crosses off picks by itself every 5 seconds, and starts polling
+unprompted if the draft is already live when you open the page. Otherwise click
+`me` / `gone` to track picks manually.
+
+*Draft night:* once the commissioner publishes the order, reload and press *Find my
+draft*, then confirm your slot on Settings and your pick numbers under *My picks*.
+Until the order exists Sleeper reports nothing and the page falls back to slot 1. The
+status line stamps every successful sync — if that clock is moving, it's working. A
+failed sync says so and retries; it will never erase your board on a bad response.
 
 Three things on this tab do the actual thinking for you:
 

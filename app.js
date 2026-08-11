@@ -116,7 +116,8 @@ const S = {
   pickLog: LS.get('pickLog', []),  // player_ids in the order they were drafted
   playoffStart: LS.get('playoffStart', 15),
   draftStart: LS.get('draftStart', null),   // epoch ms
-  draftStatus: '', draftType: '',
+  draftStatus: '', draftType: '', reversalRound: 0,
+  syncFails: 0, lastSync: null,
   fantasySchedule: null,           // {opponents: {rosterId: {week: oppRosterId}}}
   matchups: null,                  // this week's matchup rows
   results: null,                   // {games:[{week,a:{id,pts},b:{id,pts}}]}
@@ -671,11 +672,20 @@ function buildBoard() {
   S.board = players;
 }
 
-// Which overall pick numbers are mine, given a snake draft.
+/* Which overall pick numbers are mine.
+
+   Snake by default, but Sleeper also runs linear drafts (same order every round) and
+   third-round reversal, where the flip happens an extra time from a given round on.
+   Getting this wrong doesn't just misprint a number — the recommender uses the gap to
+   my next pick to decide who won't last, so a wrong pick number gives wrong advice. */
 function myPickNumbers() {
   const out = [];
+  const linear = S.draftType === 'linear';
+  const rev = S.reversalRound || 0;
   for (let r = 1; r <= S.rounds; r++) {
-    const inRound = (r % 2 === 1) ? S.mySlot : (S.teams - S.mySlot + 1);
+    let reversed = !linear && r % 2 === 0;
+    if (!linear && rev && r >= rev) reversed = !reversed;
+    const inRound = reversed ? (S.teams - S.mySlot + 1) : S.mySlot;
     out.push((r - 1) * S.teams + inRound);
   }
   return out;
@@ -2379,6 +2389,7 @@ async function loadDraftInfo(quiet) {
     S.draftStart = d.start_time || S.draftStart;
     S.draftStatus = d.status || '';
     S.draftType = d.type || '';
+    S.reversalRound = (d.settings && d.settings.reversal_round) || 0;
     const slot = d.draft_order && S.userId ? d.draft_order[S.userId] : null;
     if (slot) {
       S.mySlot = slot;
@@ -2392,6 +2403,14 @@ async function loadDraftInfo(quiet) {
     save(); renderSetupNumbers(); refreshViews();
     // Only pull picks once the thing is actually running, or manual marks get wiped.
     if (d.status === 'drafting' || d.status === 'complete') await syncPicks();
+
+    /* If the draft is live when the page opens, start polling without being asked.
+       Forgetting to tick a box is not a mistake worth making at 7pm on draft night. */
+    if (d.status === 'drafting' && !S.syncTimer) {
+      $('#autoSync').checked = true;
+      S.syncTimer = setInterval(syncPicks, 5000);
+      say('#draftStatus', 'Draft is live — auto-sync started on its own.', 'ok');
+    }
     return true;
   } catch (e) {
     if (!quiet) say('#draftStatus', `No luck: ${e.message}`, 'err');
@@ -2405,6 +2424,20 @@ async function syncPicks() {
   if (!S.draftId) return;
   try {
     const picks = await api(`/v1/draft/${S.draftId}/picks`);
+
+    /* Refuse to act on an empty response when we already had picks. A blank array is
+       indistinguishable from "the API hiccupped", and rebuilding from it would erase a
+       board mid-draft — the one moment that would be unrecoverable. */
+    if ((!picks || !picks.length) && S.pickLog.length) {
+      S.syncFails++;
+      say('#draftStatus', `Sleeper returned no picks but ${S.pickLog.length} are already ` +
+        `tracked, so the board is being left alone. ` +
+        (S.syncFails > 3 ? 'Several attempts now — check the draft is still live.' : 'Retrying.'),
+        S.syncFails > 3 ? 'err' : '');
+      return;
+    }
+    S.syncFails = 0;
+
     // Sleeper is the source of truth while syncing, so rebuild from its picks —
     // in pick_no order, because run detection depends on the sequence.
     S.drafted = {};
@@ -2414,16 +2447,27 @@ async function syncPicks() {
       .sort((a, b) => (a.pick_no || 0) - (b.pick_no || 0))
       .forEach(p => {
         if (!p.player_id) return;
-        const mine = (p.picked_by && p.picked_by === S.userId) || (p.draft_slot === S.mySlot);
+        /* When Sleeper tells us who made the pick, that is the answer — full stop.
+           The old `||` also claimed any pick from our draft slot, so if the slot was
+           still defaulting to 1 (the order isn't published until shortly before the
+           draft) every pick made by whoever holds slot 1 would land on our roster
+           mid-draft. Slot is now only a fallback for autodrafted picks, which arrive
+           with no picked_by at all. */
+        const mine = p.picked_by ? p.picked_by === S.userId : p.draft_slot === S.mySlot;
         S.drafted[p.player_id] = mine ? 'me' : 'other';
         S.pickLog.push(p.player_id);
         if (mine) S.myRoster.push(p.player_id);
       });
     save();
     refreshViews();
-    say('#draftStatus', `${picks.length} picks in. You have ${S.myRoster.length}.`, 'ok');
+    S.lastSync = Date.now();
+    const clock = new Date(S.lastSync).toLocaleTimeString();
+    say('#draftStatus', `Synced ${clock} — ${picks.length} picks in, ${S.myRoster.length} yours. ` +
+      (S.syncTimer ? 'Re-checking every 5s.' : 'Auto-sync is off.'), 'ok');
   } catch (e) {
-    say('#draftStatus', `Sync error: ${e.message}`, 'err');
+    S.syncFails++;
+    say('#draftStatus', `Sync failed (${S.syncFails} in a row): ${e.message}. ` +
+      (S.syncTimer ? 'Still retrying every 5s.' : 'Auto-sync is off.'), 'err');
   }
 }
 

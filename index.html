@@ -164,13 +164,33 @@
 
       <div class="card">
         <h2>Live sync</h2>
-        <p class="hint">If you're drafting on Sleeper, this reads the real draft every 5 seconds and
-          crosses off picks automatically.</p>
+        <p class="note">Reads the real Sleeper draft every 5 seconds and crosses off picks
+          itself. If the draft is already live when you open the page, this starts on its
+          own &mdash; you don't have to remember.</p>
         <div class="row">
           <button id="findDraft">Find my draft</button>
           <label class="check"><input id="autoSync" type="checkbox"> Auto-sync</label>
         </div>
         <p id="draftStatus" class="status"></p>
+        <details class="explain">
+          <summary>Draft night checklist</summary>
+          <p class="note"><strong>Before it starts</strong> &mdash; once the commissioner
+            publishes the draft order, reload this page and press <em>Find my draft</em>.
+            Check the Settings tab shows your real slot, and that <em>My picks</em> lists
+            the right pick numbers. Until the order exists Sleeper reports nothing, so the
+            page falls back to slot 1.</p>
+          <p class="note"><strong>While it runs</strong> &mdash; the status line above stamps
+            the time of every successful sync. If that clock is moving, it's working. If a
+            sync fails it says so and keeps retrying; it will never wipe your board on a bad
+            response.</p>
+          <p class="note"><strong>On a phone</strong> &mdash; browsers throttle background
+            tabs, so polling pauses while you're in the Sleeper app and catches up within
+            five seconds of coming back. Nothing is lost, and your progress survives a
+            refresh.</p>
+          <p class="note"><strong>Not drafting on Sleeper?</strong> Leave auto-sync off and
+            click <em>me</em> / <em>gone</em> as picks happen. Everything else &mdash;
+            recommendations, runs, needs &mdash; works identically.</p>
+        </details>
       </div>
 
       <div class="card">

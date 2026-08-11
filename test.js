@@ -1118,4 +1118,61 @@ ok('the cycle covers all three', THEMES.length === 3 &&
   THEMES.join(',') === 'auto,light,dark');
 S.theme = 'auto'; applyTheme();
 
+/* ---- 17. live draft correctness ---- */
+hdr('pick attribution: a wrong slot must not steal other people\'s picks');
+S.userId = 'me-123'; S.mySlot = 1; S.teams = 8;
+// Sleeper reports who picked. Slot 1 belongs to someone else here.
+var picks = [
+  { player_id: 'p1', pick_no: 1, picked_by: 'someone-else', draft_slot: 1 },
+  { player_id: 'p2', pick_no: 2, picked_by: 'me-123',       draft_slot: 5 },
+  { player_id: 'p3', pick_no: 3, picked_by: '',             draft_slot: 5 }, // autodrafted
+  { player_id: 'p4', pick_no: 4, picked_by: '',             draft_slot: 1 }, // autodrafted, not me
+];
+function attribute(p) { return p.picked_by ? p.picked_by === S.userId : p.draft_slot === S.mySlot; }
+ok('a named pick from my slot number is NOT mine', attribute(picks[0]) === false);
+ok('a named pick that is mine is mine', attribute(picks[1]) === true);
+S.mySlot = 5;
+ok('an autodrafted pick from my real slot is mine', attribute(picks[2]) === true);
+ok('an autodrafted pick from another slot is not', attribute(picks[3]) === false);
+S.mySlot = 1;
+ok('with the slot still defaulting to 1, the named pick is still correctly not mine',
+  attribute(picks[0]) === false);
+
+hdr('pick numbers for each draft format');
+S.teams = 8; S.rounds = 4; S.mySlot = 3; S.reversalRound = 0;
+S.draftType = 'snake';
+ok('snake alternates', myPickNumbers().join(',') === '3,14,19,30', myPickNumbers().join(','));
+S.draftType = 'linear';
+ok('linear repeats the same slot', myPickNumbers().join(',') === '3,11,19,27', myPickNumbers().join(','));
+S.draftType = 'snake'; S.reversalRound = 3;
+/* Third-round reversal: round 3 repeats round 2's order rather than flipping back.
+   That's the entire point of the format — it removes the back-to-back turn that slot 1
+   otherwise gets at the 2/3 boundary. Slot 3 of 8 therefore goes 3, 14, 22, 27. */
+ok('third-round reversal repeats round 2 order in round 3',
+  myPickNumbers().join(',') === '3,14,22,27', myPickNumbers().join(','));
+S.mySlot = 1;
+ok('3RR removes slot 1\'s back-to-back turn',
+  myPickNumbers().join(',') === '1,16,24,25', myPickNumbers().join(','));
+S.mySlot = 8;
+ok('3RR gives slot 8 an extra early pick',
+  myPickNumbers().join(',') === '8,9,17,32', myPickNumbers().join(','));
+S.mySlot = 3; S.reversalRound = 0;
+S.mySlot = 1;
+ok('slot 1 snake wraps', myPickNumbers().join(',') === '1,16,17,32', myPickNumbers().join(','));
+
+hdr('an empty sync response must not erase a live board');
+S.pickLog = ['a', 'b', 'c']; S.drafted = { a: 'me', b: 'other', c: 'other' };
+S.syncFails = 0;
+// This mirrors the guard inside syncPicks: empty payload + existing picks = leave alone.
+var guarded = (function (payload) {
+  if ((!payload || !payload.length) && S.pickLog.length) return 'kept';
+  return 'rebuilt';
+});
+ok('an empty payload leaves the board alone', guarded([]) === 'kept');
+ok('a null payload leaves the board alone', guarded(null) === 'kept');
+ok('a real payload rebuilds', guarded([{ player_id: 'x' }]) === 'rebuilt');
+S.pickLog = [];
+ok('an empty payload on an empty board is fine to rebuild', guarded([]) === 'rebuilt');
+S.drafted = {};
+
 print('\n' + (FAILS === 0 ? '*** ALL CHECKS PASSED ***' : '*** ' + FAILS + ' CHECK(S) FAILED ***'));
