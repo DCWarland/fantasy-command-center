@@ -3,84 +3,85 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fantasy Command Center — Draft Board &amp; Lineup Optimizer</title>
+<title>Fantasy Annual — draft board, optimizer, league office</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header>
-  <div class="brand">
-    <h1>🏈 Fantasy Command Center</h1>
-    <span id="stateBadge" class="badge">connecting…</span>
+  <div class="masthead">
+    <div class="mast-left">
+      <p class="mast-kicker">Fantasy Annual</p>
+      <h1 id="mastTitle">Fantasy Annual</h1>
+      <p id="mastSub" class="mast-sub">connecting&hellip;</p>
+    </div>
+    <div id="draftClock" class="clock"></div>
   </div>
   <nav class="tabs">
-    <button class="tab active" data-tab="setup">Setup</button>
+    <button class="tab active" data-tab="league">League</button>
     <button class="tab" data-tab="draft">Draft Board</button>
     <button class="tab" data-tab="lineup">Lineup</button>
-    <button class="tab" data-tab="teams">Teams &amp; Schedule</button>
+    <button class="tab" data-tab="teams">Teams</button>
+    <button class="tab" data-tab="setup">Settings</button>
   </nav>
 </header>
 
 <main>
 
-<!-- ============================= SETUP ============================= -->
-<section id="tab-setup" class="panel active">
+<!-- ============================ LEAGUE ============================= -->
+<section id="tab-league" class="panel active">
 
-  <div class="card">
-    <h2>1. Connect your Sleeper league <span class="opt">(optional)</span></h2>
-    <p class="hint">Type your Sleeper username to pull in your league's scoring rules, roster slots and
-      your team. No password needed — Sleeper's data is public and read-only. If your league isn't on
-      Sleeper, skip this and set things up by hand below.</p>
-    <div class="row">
-      <input id="username" type="text" placeholder="Sleeper username" autocomplete="off">
-      <button id="loadUser" class="primary">Find my leagues</button>
-    </div>
-    <div class="row" id="leagueRow" hidden>
-      <select id="leagueSelect"></select>
-      <button id="importLeague" class="primary">Import this league</button>
-    </div>
-    <p id="setupStatus" class="status"></p>
+  <div class="sheet">
+    <h2>The league</h2>
+    <dl id="dossier" class="facts"></dl>
   </div>
 
-  <div class="card">
-    <h2>2. Starting lineup slots</h2>
-    <p class="hint">How many of each slot your team starts each week. <b>FLEX</b> = RB/WR/TE,
-      <b>SUPER_FLEX</b> = QB/RB/WR/TE, <b>BN</b> = bench. These drive both the optimizer and the
-      draft board's value math.</p>
-    <div id="slotEditor" class="slot-editor"></div>
-    <div class="row">
-      <label>Teams in league <input id="teams" type="number" min="2" max="32" step="1" class="num"></label>
-      <label>My draft slot <input id="draftSlot" type="number" min="1" max="32" step="1" class="num"></label>
-      <label>Rounds <input id="rounds" type="number" min="1" max="40" step="1" class="num"></label>
+  <div class="two-up">
+    <div class="sheet">
+      <h2>Power rankings</h2>
+      <p id="powerNote" class="note"></p>
+      <div class="table-wrap">
+        <table id="powerTable">
+          <thead><tr><th>#</th><th>Team</th><th class="num-col">Rec</th>
+            <th class="num-col">Roster</th><th class="num-col">PF</th>
+            <th class="num-col">Power</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>3. Scoring rules</h2>
-    <p class="hint">Points per stat. Every player's projection is recalculated from these numbers, so
-      a change here instantly reshuffles the draft board and the optimizer. Blank or 0 means the stat
-      doesn't score.</p>
-    <div class="row">
-      <label class="check"><input id="showAllScoring" type="checkbox"> Show rules worth 0</label>
-      <span id="scoringCount" class="badge small"></span>
-    </div>
-    <div id="scoringEditor" class="scoring-editor"></div>
-    <div class="row">
-      <button id="resetScoring">Reset to half-PPR defaults</button>
+    <div class="sheet">
+      <h2>Standings</h2>
+      <p id="standNote" class="note"></p>
+      <div class="table-wrap">
+        <table id="standTable">
+          <thead><tr><th>#</th><th>Team</th><th class="num-col">W-L</th>
+            <th class="num-col">PF</th><th class="num-col">PA</th>
+            <th class="num-col">Diff</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
-  <div class="card">
-    <h2>4. Projection data</h2>
-    <p class="hint">Projections come from Sleeper's feed (sourced from Rotowire) and are cached in this
-      browser for 6 hours so the page loads fast. Hit refresh after big news.</p>
-    <div class="row">
-      <button id="refreshData" class="primary">Refresh projections now</button>
-      <span id="dataStatus" class="status"></span>
-    </div>
-    <div class="row">
-      <button id="wipe" class="danger">Erase all saved settings</button>
-      <span class="hint">Clears this browser's saved league, scoring and draft progress.</span>
+  <div class="sheet">
+    <h2>This week's matchups</h2>
+    <p class="note">Projected from each side's best legal lineup, or actual points once
+      they're in. Your game is highlighted.</p>
+    <div id="matchups" class="matches"></div>
+  </div>
+
+  <div class="sheet">
+    <h2>Schedule strength &mdash; your league</h2>
+    <p class="note">How tough the <em>fantasy</em> opponents are that each team has to play,
+      measured by power score. <strong>1 is the softest slate in the league, 10 the
+      roughest.</strong> Run-in covers the three weeks before the playoffs.</p>
+    <div class="table-wrap">
+      <table id="lsosTable">
+        <thead><tr><th>Team</th><th class="num-col">Games</th>
+          <th class="num-col">Season</th><th class="num-col">Run-in</th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
   </div>
 
@@ -275,11 +276,11 @@
     </div>
 
     <div class="card">
-      <h2>Strength of schedule</h2>
-      <p class="hint"><b>1 is the easiest slate in the league, 10 the hardest</b>, ranked against
-        all 32 teams. <b>Playoffs</b> covers weeks 15&ndash;17 only, which is the column that
-        actually decides your season. Read the caveat in the footer before trusting these
-        to two decimal places.</p>
+      <h2>NFL schedules &amp; byes</h2>
+      <p class="note">Per <em>NFL</em> team, not per fantasy team &mdash; this is what feeds the
+        Bye and SoS columns on the draft board. <strong>1 is the easiest slate, 10 the
+        hardest</strong>, ranked across all 32. <strong>Playoffs</strong> covers weeks
+        15&ndash;17. For your league's own schedule strength, see the League page.</p>
       <div class="table-wrap">
         <table id="schedTable">
           <thead><tr><th>Team</th><th class="num-col">Bye</th>
@@ -310,19 +311,84 @@
 
 </section>
 
+<!-- ============================ SETTINGS =========================== -->
+<section id="tab-setup" class="panel">
+
+  <div class="card">
+    <h2>1. Connect your Sleeper league <span class="opt">(optional)</span></h2>
+    <p class="hint">Type your Sleeper username to pull in your league's scoring rules, roster slots and
+      your team. No password needed — Sleeper's data is public and read-only. If your league isn't on
+      Sleeper, skip this and set things up by hand below.</p>
+    <div class="row">
+      <input id="username" type="text" placeholder="Sleeper username" autocomplete="off">
+      <button id="loadUser" class="primary">Find my leagues</button>
+    </div>
+    <div class="row" id="leagueRow" hidden>
+      <select id="leagueSelect"></select>
+      <button id="importLeague" class="primary">Import this league</button>
+    </div>
+    <p id="setupStatus" class="status"></p>
+  </div>
+
+  <div class="card">
+    <h2>2. Starting lineup slots</h2>
+    <p class="hint">How many of each slot your team starts each week. <b>FLEX</b> = RB/WR/TE,
+      <b>SUPER_FLEX</b> = QB/RB/WR/TE, <b>BN</b> = bench. These drive both the optimizer and the
+      draft board's value math.</p>
+    <div id="slotEditor" class="slot-editor"></div>
+    <div class="row">
+      <label>Teams in league <input id="teams" type="number" min="2" max="32" step="1" class="num"></label>
+      <label>My draft slot <input id="draftSlot" type="number" min="1" max="32" step="1" class="num"></label>
+      <label>Rounds <input id="rounds" type="number" min="1" max="40" step="1" class="num"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Scoring rules</h2>
+    <p class="hint">Points per stat. Every player's projection is recalculated from these numbers, so
+      a change here instantly reshuffles the draft board and the optimizer. Blank or 0 means the stat
+      doesn't score.</p>
+    <div class="row">
+      <label class="check"><input id="showAllScoring" type="checkbox"> Show rules worth 0</label>
+      <span id="scoringCount" class="badge small"></span>
+    </div>
+    <div id="scoringEditor" class="scoring-editor"></div>
+    <div class="row">
+      <button id="resetScoring">Reset to half-PPR defaults</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. Projection data</h2>
+    <p class="hint">Projections come from Sleeper's feed (sourced from Rotowire) and are cached in this
+      browser for 6 hours so the page loads fast. Hit refresh after big news.</p>
+    <div class="row">
+      <button id="refreshData" class="primary">Refresh projections now</button>
+      <span id="dataStatus" class="status"></span>
+    </div>
+    <div class="row">
+      <button id="wipe" class="danger">Erase all saved settings</button>
+      <span class="hint">Clears this browser's saved league, scoring and draft progress.</span>
+    </div>
+  </div>
+
+</section>
+
 </main>
 
 <footer>
   <p>Projections via Sleeper's public API (Rotowire), re-scored under your league's rules. Values
      marked <b>*</b> had no headline projection from Sleeper to anchor to, so they're a raw stat sum
      and less reliable. Nothing you enter leaves your browser.</p>
-  <p><b>On strength of schedule:</b> this API publishes no "fantasy points allowed by position"
-     data, so difficulty is proxied by each defence's own projected fantasy output — units that
-     collect sacks, interceptions and shutouts are the ones that smother offences. It's a
-     reasonable proxy and useful for sorting matchups, but it is not the same thing as measuring
-     what a defence gives up, so treat the numbers as a rough ordering rather than a precise
-     forecast. The schedule and bye weeks themselves are exact, reconstructed from the
-     week-by-week opponent listed on every projection.</p>
+  <p><b>Two different schedule measures, deliberately.</b> On the League page, schedule strength
+     means the <b>fantasy</b> teams you have to play, scored by their power rating — that's the one
+     that decides your record. On the Teams page it means the <b>NFL</b> defences a player faces,
+     which is a drafting consideration and feeds the Bye and SoS columns on the board.</p>
+  <p>The NFL version is a proxy: this API publishes no "fantasy points allowed by position" data, so
+     difficulty is measured by each defence's own projected output — units that collect sacks,
+     interceptions and shutouts are the ones that smother offences. Useful for ordering matchups,
+     not a precise forecast. The schedules and bye weeks themselves are exact, reconstructed from
+     the week-by-week opponent listed on every projection.</p>
 </footer>
 
 <script src="app.js"></script>

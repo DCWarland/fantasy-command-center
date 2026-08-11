@@ -7,7 +7,7 @@ files — no server, no database, no build step — so it works on GitHub Pages 
 
 | File | What it is |
 |---|---|
-| `index.html` | The page structure: four tabs and the tables/forms inside them. |
+| `index.html` | The page structure: five tabs and the tables/forms inside them. |
 | `style.css` | Purely how it looks. Safe to fiddle with. |
 | `app.js` | All the logic: fetching data, scoring, draft values, the optimizer. |
 | `test.js`, `run-tests.sh` | Checks the logic still works. Not needed on the website — don't upload them if you'd rather not. |
@@ -39,7 +39,14 @@ data requests from `file://` pages, so the local server is the reliable way.)
 
 ## How to use it
 
-**Setup tab** — type your Sleeper username, pick your league, hit Import. That pulls
+**League page** (opens here) — your league's front page. A dossier of the format, a
+countdown to the draft, power rankings, standings, this week's matchups, and schedule
+strength for the teams *in your league*. Power rankings weight roster strength 55%,
+record 28% and points 17%, because an 8-team league where everyone makes the playoffs
+produces a lot of meaningless wins — so the best roster can and should outrank a team
+with a better record.
+
+**Settings tab** (last) — type your Sleeper username, pick your league, hit Import. That pulls
 in your exact scoring rules, roster slots and team count. Everything it imported is
 then editable, and any edit instantly re-ranks the draft board. If your league isn't
 on Sleeper, skip the import and set the slots and scoring by hand.
@@ -72,8 +79,10 @@ currently-set lineup by.
   first, because a fourth good running back you can't start doesn't win games.
 - **Best available in your league** — everyone nobody owns, ranked by VOR. This is
   your draft's leftovers before the season and your waiver-wire board after it.
-- **Strength of schedule** for all 32 NFL teams, with the fantasy playoff weeks
-  (15&ndash;17) broken out separately, plus every team's bye week.
+- **NFL schedules & byes** for all 32 teams, playoff weeks broken out. Note this is
+  a *different* measure from the League page's: this one is about the defences a
+  player faces (a drafting question), that one is about the fantasy teams you play
+  (a standings question).
 - **Trade analyser** — tick who each side sends; both rosters are rebuilt and
   re-solved, so the number shown is the change in points you can actually *start*.
   A player who only upgrades your bench shows as roughly zero, which is the point.
@@ -90,6 +99,13 @@ sideways, so the draft board is usable one-handed while you're actually drafting
 Your settings and draft progress are saved in your browser (`localStorage`), so a
 refresh mid-draft doesn't lose anything. *Erase all saved settings* on the Setup tab
 resets it.
+
+## On the design
+
+It's set as a printed football annual — newsprint, ink type, one oxblood accent, ruled
+stat sheets instead of floating cards, headings and figures in a serif. There's a dark
+variant that swaps only the colour tokens; the type, rules and spacing don't change, so
+it reads as the same design either way. It follows your system light/dark setting.
 
 ## The two ideas worth understanding
 
@@ -156,7 +172,7 @@ against live data. Run it after any change to `app.js`:
 sh run-tests.sh            # add --fresh to re-download the projection data
 ```
 
-You want to see `*** ALL CHECKS PASSED ***` at the bottom. 213 checks currently,
+You want to see `*** ALL CHECKS PASSED ***` at the bottom. 262 checks currently,
 covering:
 
 - Every projected player, both feeds: under Sleeper's default rules the scoring

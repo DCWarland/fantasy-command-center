@@ -807,4 +807,102 @@ smoke('renderWarnings with no roster', renderWarnings);
 smoke('renderRuns with no picks', renderRuns);
 smoke('renderRecommend with no picks', renderRecommend);
 
+/* ---- 11. the league office ---- */
+hdr('power rankings');
+S.slots = DEFAULT_SLOTS.slice(); S.teams = 8; S.drafted = {}; buildBoard();
+var eliteR = S.board.slice(0, 14).map(function (p) { return p.id; });
+var midR   = S.board.slice(60, 74).map(function (p) { return p.id; });
+var weakR  = S.board.slice(250, 264).map(function (p) { return p.id; });
+
+function team(id, name, players, wins, losses, fpts) {
+  return { rosterId: id, name: name, players: players, starters: [], isMine: id === 1,
+           wins: wins || 0, losses: losses || 0, ties: 0, fpts: fpts || 0, fptsAgainst: 0 };
+}
+
+// Nothing drafted, nothing played: every score would be an identical 50.
+S.teamsInLeague = [team(1, 'A', []), team(2, 'B', []), team(3, 'C', [])];
+var pr0 = powerRankings();
+ok('empty league yields no scores rather than a fake 50',
+  pr0.every(function (r) { return r.score === null; }), JSON.stringify(pr0.map(function (r) { return r.score; })));
+ok('ranks are still assigned', pr0.every(function (r, i) { return r.rank === i + 1; }));
+
+// Rosters drafted, no games played: pure roster strength.
+S.teamsInLeague = [team(1, 'Weak', weakR), team(2, 'Elite', eliteR), team(3, 'Mid', midR)];
+var pr1 = powerRankings();
+print('  no games: ' + pr1.map(function (r) { return r.team.name + ' ' + r.score.toFixed(0); }).join(', '));
+ok('the strongest roster ranks first', pr1[0].team.name === 'Elite');
+ok('the weakest ranks last', pr1[pr1.length - 1].team.name === 'Weak');
+ok('scores span 0 to 100', pr1[0].score === 100 && pr1[pr1.length - 1].score === 0);
+
+// Once games exist, record and points get a say.
+S.teamsInLeague = [team(1, 'Weak but winning', weakR, 8, 0, 1200),
+                   team(2, 'Elite but losing', eliteR, 0, 8, 700),
+                   team(3, 'Mid', midR, 4, 4, 950)];
+var pr2 = powerRankings();
+print('  with games: ' + pr2.map(function (r) { return r.team.name + ' ' + r.score.toFixed(0); }).join(', '));
+ok('record and points move the ranking once played',
+  pr2.map(function (r) { return r.team.name; }).join('|') !== pr1.map(function (r) { return r.team.name; }).join('|'));
+ok('roster strength still counts for something',
+  pr2.filter(function (r) { return r.team.name === 'Elite but losing'; })[0].score > 0);
+
+hdr('league strength of schedule (fantasy opponents, not NFL)');
+S.teamsInLeague = [team(1, 'A', eliteR), team(2, 'B', midR), team(3, 'C', weakR), team(4, 'D', midR)];
+S.playoffStart = 15;
+// A plays the strongest opponents; C plays the weakest.
+S.fantasySchedule = { at: 0, weeks: 14, opponents: {
+  1: { 1: 2, 2: 2, 12: 2, 13: 2, 14: 2 },
+  2: { 1: 1, 2: 1, 12: 1, 13: 1, 14: 1 },
+  3: { 1: 4, 2: 4, 12: 4, 13: 4, 14: 4 },
+  4: { 1: 3, 2: 3, 12: 3, 13: 3, 14: 3 },
+} };
+var ls = leagueSos();
+print('  ' + ls.map(function (r) { return r.team.name + ' ' + (r.all == null ? '-' : r.all.toFixed(1)); }).join(', '));
+ok('every team gets a rating', ls.length === 4 && ls.every(function (r) { return r.all != null; }));
+ok('ratings sit inside 1-10', ls.every(function (r) { return r.all >= 1 && r.all <= 10; }));
+ok('sorted easiest slate first', ls.every(function (r, i) { return i === 0 || ls[i - 1].all <= r.all; }));
+ok('game counts come through', ls.every(function (r) { return r.games === 5; }));
+var byName = {}; ls.forEach(function (r) { byName[r.team.name] = r.all; });
+// B plays A (the elite roster) every week, so B must have the roughest slate.
+ok('the team facing the strongest opponent has the roughest schedule',
+  byName.B >= Math.max(byName.A, byName.C, byName.D), JSON.stringify(byName));
+ok('run-in column computed', ls.every(function (r) { return r.late != null; }));
+
+S.fantasySchedule = null;
+ok('no schedule yields an empty list, not a crash', leagueSos().length === 0);
+
+hdr('draft countdown');
+S.draftStart = null;
+ok('no draft time yields null', draftCountdown() === null);
+S.draftStart = Date.now() + (3 * 86400000) + (5 * 3600000);
+var cd = draftCountdown();
+ok('counts days and hours', cd.days === 3 && cd.hours === 5 && !cd.past, JSON.stringify(cd));
+S.draftStart = Date.now() - 86400000;
+ok('a past draft is flagged', draftCountdown().past === true);
+S.draftStart = null;
+
+hdr('rendering the league page');
+S.teamsInLeague = [team(1, 'A', eliteR, 5, 2, 900), team(2, 'B', midR, 3, 4, 800)];
+S.matchups = [
+  { matchup_id: 1, roster_id: 1, players: eliteR, starters: eliteR.slice(0, 10), points: 0 },
+  { matchup_id: 1, roster_id: 2, players: midR, starters: midR.slice(0, 10), points: 0 },
+];
+S.fantasySchedule = { at: 0, weeks: 14, opponents: { 1: { 1: 2 }, 2: { 1: 1 } } };
+smoke('renderDossier', renderDossier);
+smoke('renderPower', renderPower);
+smoke('renderStandings', renderStandings);
+smoke('renderMatchups', renderMatchups);
+smoke('renderLeagueSos', renderLeagueSos);
+smoke('renderLeague (all of it)', renderLeague);
+ok('power table populated', document.querySelector('#powerTable tbody').children.length > 0);
+ok('standings populated', document.querySelector('#standTable tbody').children.length > 0);
+ok('matchups rendered', document.querySelector('#matchups').children.length > 0);
+ok('dossier facts rendered', document.querySelector('#dossier').children.length >= 4);
+
+hdr('league page with nothing loaded');
+S.teamsInLeague = []; S.matchups = null; S.fantasySchedule = null;
+smoke('renderLeague empty', renderLeague);
+smoke('renderMatchups empty', renderMatchups);
+smoke('renderPower empty', renderPower);
+smoke('renderLeagueSos empty', renderLeagueSos);
+
 print('\n' + (FAILS === 0 ? '*** ALL CHECKS PASSED ***' : '*** ' + FAILS + ' CHECK(S) FAILED ***'));

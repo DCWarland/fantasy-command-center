@@ -114,6 +114,11 @@ const S = {
   rankMode: LS.get('rankMode', 'season'),   // 'season' | 'playoffs'
   trending: null,                  // {adds:[{player_id,count}], drops:[...]}
   pickLog: LS.get('pickLog', []),  // player_ids in the order they were drafted
+  playoffStart: LS.get('playoffStart', 15),
+  draftStart: LS.get('draftStart', null),   // epoch ms
+  draftStatus: '', draftType: '',
+  fantasySchedule: null,           // {opponents: {rosterId: {week: oppRosterId}}}
+  matchups: null,                  // this week's matchup rows
   drafted: LS.get('drafted', {}),      // player_id -> 'me' | 'other'
   myRoster: LS.get('myRoster', []),    // player_ids on my team
   sleeperStarters: [],                 // what Sleeper currently has me starting
@@ -126,7 +131,7 @@ const S = {
 
 function save() {
   ['username', 'userId', 'leagueId', 'leagueName', 'scoring', 'slots', 'teams', 'mySlot', 'rounds',
-    'drafted', 'myRoster', 'pickLog', 'rankMode'].forEach(k => LS.set(k, S[k]));
+    'drafted', 'myRoster', 'pickLog', 'rankMode', 'playoffStart', 'draftStart'].forEach(k => LS.set(k, S[k]));
 }
 
 function say(sel, msg, kind = '') {
@@ -665,6 +670,125 @@ function myScoredRoster() {
     // Not in this week's feed: bye week, injured out, or not projected to play.
     return { id, name: d.name || `#${id}`, pos: d.pos || '?', team: d.team || '', opp: 'BYE/—', inj: '', pts: 0, exact: true };
   });
+}
+
+/* ========================= 5c. LEAGUE OFFICE ============================ */
+
+/* The fantasy schedule — who plays whom, week by week.
+
+   Note this is NOT the NFL schedule. Sleeper only generates fantasy matchups once a
+   league is under way, so before your draft every week comes back empty. Everything
+   here is built to fill in on its own the moment that changes. */
+async function loadFantasySchedule(force) {
+  if (!S.leagueId) return null;
+  const lastWeek = (S.playoffStart || 15) - 1;
+  const key = `cache.fsched.${S.leagueId}`;
+  const hit = LS.get(key);
+  if (!force && hit && Date.now() - hit.at < 6 * 3600 * 1000) return hit;
+
+  const weeks = await Promise.all(
+    Array.from({ length: lastWeek }, (_, i) =>
+      api(`/v1/league/${S.leagueId}/matchups/${i + 1}`).catch(() => [])));
+
+  // matchup_id pairs two roster_ids together in a given week.
+  const opponents = {};   // rosterId -> {week: opponentRosterId}
+  weeks.forEach((rows, i) => {
+    const byMatch = {};
+    (rows || []).forEach(r => (byMatch[r.matchup_id] = byMatch[r.matchup_id] || []).push(r.roster_id));
+    Object.values(byMatch).forEach(pair => {
+      if (pair.length !== 2) return;
+      (opponents[pair[0]] = opponents[pair[0]] || {})[i + 1] = pair[1];
+      (opponents[pair[1]] = opponents[pair[1]] || {})[i + 1] = pair[0];
+    });
+  });
+
+  const rec = { at: Date.now(), opponents, weeks: lastWeek };
+  LS.set(key, rec);
+  return rec;
+}
+
+/* Power rankings.
+
+   Record alone is a poor guide early — an 8-team league produces flukes, and in a
+   league where every team makes the playoffs, wins matter even less. Roster strength
+   (the best legal lineup a team can field) is the more honest signal, so it carries
+   the most weight, with record and points scored as corroboration. Before anyone has
+   played, it's roster strength alone. */
+function powerRankings() {
+  if (!S.teamsInLeague.length) return [];
+
+  const rows = S.teamsInLeague.map(t => {
+    const games = (t.wins || 0) + (t.losses || 0) + (t.ties || 0);
+    return {
+      team: t,
+      strength: rosterStrength(t.players).total,
+      winPct: games ? ((t.wins || 0) + (t.ties || 0) * 0.5) / games : null,
+      pf: t.fpts || 0,
+      games,
+    };
+  });
+
+  const norm = (key) => {
+    const vals = rows.map(r => r[key]).filter(v => v != null);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    return r => (r[key] == null || hi === lo) ? 0.5 : (r[key] - lo) / (hi - lo);
+  };
+  const nS = norm('strength'), nW = norm('winPct'), nP = norm('pf');
+  const played = rows.some(r => r.games > 0);
+  const anyRosters = rows.some(r => r.strength > 0);
+
+  rows.forEach(r => {
+    // Nothing drafted and nothing played: every score would be an identical 50,
+    // which reads as broken rather than as "no data". Leave it blank instead.
+    r.score = (!played && !anyRosters) ? null
+      : played ? 100 * (0.55 * nS(r) + 0.28 * nW(r) + 0.17 * nP(r))
+        : 100 * nS(r);
+  });
+  if (rows.some(r => r.score != null)) rows.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  rows.forEach((r, i) => r.rank = i + 1);
+  return rows;
+}
+
+/* Strength of schedule for the teams in YOUR league: how strong are the fantasy
+   opponents each team has to play, using power score as the measure of strength. */
+function leagueSos() {
+  if (!S.fantasySchedule || !S.teamsInLeague.length) return [];
+  const power = {};
+  powerRankings().forEach(r => power[r.team.rosterId] = r.score);
+
+  const raw = {}, rawPost = {};
+  const playoffStart = S.playoffStart || 15;
+  Object.keys(S.fantasySchedule.opponents).forEach(rid => {
+    const opps = S.fantasySchedule.opponents[rid];
+    const all = [], late = [];
+    Object.keys(opps).forEach(w => {
+      const p = power[opps[w]];
+      if (p == null) return;
+      all.push(p);
+      if (+w >= playoffStart - 3) late.push(p);   // the run-in
+    });
+    const avg = a => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+    if (all.length) raw[rid] = avg(all);
+    if (late.length) rawPost[rid] = avg(late);
+  });
+
+  const r1 = rank10(raw), r2 = rank10(rawPost);
+  return S.teamsInLeague.map(t => ({
+    team: t,
+    all: r1[t.rosterId] ?? null,
+    late: r2[t.rosterId] ?? null,
+    games: Object.keys((S.fantasySchedule.opponents[t.rosterId]) || {}).length,
+  })).sort((a, b) => (a.all ?? 99) - (b.all ?? 99));
+}
+
+// Days and hours until the draft clock starts.
+function draftCountdown() {
+  if (!S.draftStart) return null;
+  const ms = S.draftStart - Date.now();
+  if (ms <= 0) return { past: true };
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  return { past: false, days, hours, when: new Date(S.draftStart) };
 }
 
 /* ====================== 5b. DRAFT INTELLIGENCE ========================== */
@@ -1415,6 +1539,170 @@ function renderSchedule() {
   });
 }
 
+/* -- the league page ----------------------------------------------------- */
+
+function renderDossier() {
+  const box = $('#dossier');
+  box.innerHTML = '';
+  const bits = [];
+  if (S.leagueName) bits.push(['League', S.leagueName]);
+  bits.push(['Format', `${S.teams} teams · ` +
+    (S.scoring.rec >= 1 ? 'full PPR' : S.scoring.rec > 0 ? `${S.scoring.rec} PPR` : 'standard')]);
+  bits.push(['Starters', startingSlots().join(' · ')]);
+  bits.push(['Draft', `${S.rounds} rounds${S.draftType ? ', ' + S.draftType : ''}` +
+    (S.draftStatus ? ` (${S.draftStatus.replace(/_/g, ' ')})` : '')]);
+  bits.push(['Playoffs', `week ${S.playoffStart} onward`]);
+
+  bits.forEach(([k, v]) => {
+    const d = el('div', 'fact');
+    d.innerHTML = `<dt>${k}</dt><dd>${v}</dd>`;
+    box.append(d);
+  });
+
+  const cd = draftCountdown();
+  const clock = $('#draftClock');
+  if (!cd) { clock.textContent = ''; return; }
+  if (cd.past) {
+    clock.innerHTML = `<span class="clock-label">Draft</span><span class="clock-big">under way or done</span>`;
+  } else {
+    const when = cd.when.toLocaleString(undefined,
+      { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    clock.innerHTML =
+      `<span class="clock-label">Draft in</span>` +
+      `<span class="clock-big">${cd.days}<small>d</small> ${cd.hours}<small>h</small></span>` +
+      `<span class="clock-when">${when}</span>`;
+  }
+}
+
+function renderPower() {
+  const tb = $('#powerTable tbody');
+  tb.innerHTML = '';
+  const rows = powerRankings();
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Load the league on the Setup tab, ' +
+      'then press Load league rosters.</td></tr>';
+    return;
+  }
+  const anyPlayers = rows.some(r => r.team.players.length);
+  $('#powerNote').textContent = anyPlayers
+    ? (rows.some(r => r.games) ? 'Roster strength 55%, record 28%, points scored 17%.'
+      : 'Nobody has played yet, so this is pure roster strength.')
+    : 'Every roster is empty until the draft runs — this fills in on its own afterwards.';
+
+  rows.forEach(r => {
+    const t = r.team;
+    const tr = el('tr', t.isMine ? 'mine' : '');
+    tr.innerHTML = `
+      <td class="c-rank n">${r.rank}</td>
+      <td class="c-player">${t.name}${t.isMine ? ' <span class="you">you</span>' : ''}</td>
+      <td class="n" data-label="Rec">${t.wins}-${t.losses}${t.ties ? '-' + t.ties : ''}</td>
+      <td class="n" data-label="Roster">${r.strength ? fmt(r.strength, 0) : '—'}</td>
+      <td class="n" data-label="PF">${r.pf ? fmt(r.pf, 1) : '—'}</td>
+      <td class="n c-vor" data-label="Power">${r.score == null ? '—' : fmt(r.score, 0)}</td>`;
+    tb.append(tr);
+  });
+}
+
+function renderStandings() {
+  const tb = $('#standTable tbody');
+  tb.innerHTML = '';
+  if (!S.teamsInLeague.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Not loaded.</td></tr>';
+    return;
+  }
+  const rows = S.teamsInLeague.slice().sort((a, b) =>
+    (b.wins - a.wins) || (b.fpts - a.fpts));
+  const played = rows.some(t => t.wins || t.losses || t.ties);
+  $('#standNote').textContent = played ? '' :
+    'No games played yet, so this is just the roster order.';
+
+  rows.forEach((t, i) => {
+    const tr = el('tr', t.isMine ? 'mine' : '');
+    const diff = t.fpts - t.fptsAgainst;
+    tr.innerHTML = `
+      <td class="c-rank n">${i + 1}</td>
+      <td class="c-player">${t.name}${t.isMine ? ' <span class="you">you</span>' : ''}</td>
+      <td class="n" data-label="W-L">${t.wins}-${t.losses}${t.ties ? '-' + t.ties : ''}</td>
+      <td class="n" data-label="PF">${t.fpts ? fmt(t.fpts, 1) : '—'}</td>
+      <td class="n" data-label="PA">${t.fptsAgainst ? fmt(t.fptsAgainst, 1) : '—'}</td>
+      <td class="n ${diff > 0 ? 'val-up' : diff < 0 ? 'val-down' : ''}" data-label="Diff">${
+        (t.fpts || t.fptsAgainst) ? (diff > 0 ? '+' : '') + fmt(diff, 1) : '—'}</td>`;
+    tb.append(tr);
+  });
+}
+
+function renderMatchups() {
+  const box = $('#matchups');
+  box.innerHTML = '';
+  const rows = S.matchups || [];
+  if (!rows.length) {
+    box.innerHTML = '<p class="empty">Sleeper hasn\'t generated a fantasy schedule yet — ' +
+      'it appears once the league is under way. Nothing is broken; this fills itself in.</p>';
+    return;
+  }
+  const nameOf = {};
+  S.teamsInLeague.forEach(t => nameOf[t.rosterId] = t);
+
+  // Project each side's best legal lineup for the week.
+  const weekById = {};
+  scoreRows(S.weekRows).forEach(r => weekById[r.id] = r);
+  const project = ids => {
+    const roster = (ids || []).map(id => weekById[id]).filter(Boolean);
+    return optimalLineup(roster).total;
+  };
+
+  const byMatch = {};
+  rows.forEach(r => (byMatch[r.matchup_id] = byMatch[r.matchup_id] || []).push(r));
+
+  Object.keys(byMatch).forEach(mid => {
+    const pair = byMatch[mid];
+    if (pair.length !== 2) return;
+    const [a, b] = pair;
+    const ta = nameOf[a.roster_id] || { name: 'Team ' + a.roster_id, isMine: false };
+    const tb2 = nameOf[b.roster_id] || { name: 'Team ' + b.roster_id, isMine: false };
+    const pa = project(a.players), pb = project(b.players);
+    const mine = ta.isMine || tb2.isMine;
+
+    const row = el('div', 'match' + (mine ? ' mine' : ''));
+    const edge = Math.abs(pa - pb);
+    row.innerHTML =
+      `<div class="match-side ${pa >= pb ? 'lead' : ''}"><b>${ta.name}</b>` +
+      `<span>${fmt(a.points || pa, 1)}</span></div>` +
+      `<div class="match-mid">${edge < 3 ? 'toss-up' : fmt(edge, 0) + ' pts'}</div>` +
+      `<div class="match-side ${pb > pa ? 'lead' : ''}"><b>${tb2.name}</b>` +
+      `<span>${fmt(b.points || pb, 1)}</span></div>`;
+    box.append(row);
+  });
+}
+
+function renderLeagueSos() {
+  const tb = $('#lsosTable tbody');
+  tb.innerHTML = '';
+  const rows = leagueSos();
+  if (!rows.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="empty">No fantasy schedule published yet. ' +
+      'Sleeper creates the week-by-week matchups once the league starts, and this fills in then.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const tr = el('tr', r.team.isMine ? 'mine' : '');
+    tr.innerHTML = `
+      <td class="c-player">${r.team.name}${r.team.isMine ? ' <span class="you">you</span>' : ''}</td>
+      <td class="n" data-label="Games">${r.games || '—'}</td>
+      <td class="n ${sosCls(r.all)}" data-label="Season">${r.all ? fmt(r.all, 1) : '—'}</td>
+      <td class="n ${sosCls(r.late)}" data-label="Run-in">${r.late ? fmt(r.late, 1) : '—'}</td>`;
+    tb.append(tr);
+  });
+}
+
+function renderLeague() {
+  renderDossier();
+  renderPower();
+  renderStandings();
+  renderMatchups();
+  renderLeagueSos();
+}
+
 function renderTeams() {
   fillTeamSelects();
   renderCompare();
@@ -1451,6 +1739,7 @@ function renderByeWarnings() {
 
 function refreshViews() {
   buildBoard();
+  renderLeague();
   renderBoard();
   renderRecommend();
   renderRuns();
@@ -1512,6 +1801,7 @@ async function importLeague(id) {
     S.teams = l.total_rosters || S.teams;
     if (l.scoring_settings) S.scoring = { ...l.scoring_settings };
     if (l.draft_id) S.draftId = l.draft_id;   // saves looking it up separately
+    if (l.settings && l.settings.playoff_week_start) S.playoffStart = l.settings.playoff_week_start;
     save();
 
     renderSlotEditor(); renderScoringEditor(); renderSetupNumbers(); updateBadge();
@@ -1521,6 +1811,9 @@ async function importLeague(id) {
       `${startingSlots().length} starting slots (${startingSlots().join('/')}), ` +
       `${Object.keys(S.scoring).length} scoring rules.`, 'ok');
     if (S.draftId) await loadDraftInfo(true);
+    // The league page is the landing page, so it shouldn't need a button on another
+    // tab pressed before it has anything to show.
+    await loadLeagueTeams();
     return true;
   } catch (e) {
     say('#setupStatus', `Import failed: ${e.message}`, 'err');
@@ -1577,6 +1870,9 @@ async function loadDraftInfo(quiet) {
       S.teams = d.settings.teams || S.teams;
       S.rounds = d.settings.rounds || S.rounds;
     }
+    S.draftStart = d.start_time || S.draftStart;
+    S.draftStatus = d.status || '';
+    S.draftType = d.type || '';
     const slot = d.draft_order && S.userId ? d.draft_order[S.userId] : null;
     if (slot) {
       S.mySlot = slot;
@@ -1698,15 +1994,32 @@ async function loadLeagueTeams() {
     (users || []).forEach(u => {
       nameFor[u.user_id] = (u.metadata && u.metadata.team_name) || u.display_name || 'Unknown';
     });
-    S.teamsInLeague = (rosters || []).map(r => ({
-      rosterId: r.roster_id,
-      name: nameFor[r.owner_id] || `Team ${r.roster_id}`,
-      players: r.players || [],
-      starters: (r.starters || []).filter(id => id && id !== '0'),
-      isMine: r.owner_id === S.userId,
-    }));
+    S.teamsInLeague = (rosters || []).map(r => {
+      const st = r.settings || {};
+      return {
+        rosterId: r.roster_id,
+        name: nameFor[r.owner_id] || `Team ${r.roster_id}`,
+        players: r.players || [],
+        starters: (r.starters || []).filter(id => id && id !== '0'),
+        isMine: r.owner_id === S.userId,
+        wins: st.wins || 0,
+        losses: st.losses || 0,
+        ties: st.ties || 0,
+        // Sleeper splits points into whole and decimal parts.
+        fpts: (st.fpts || 0) + (st.fpts_decimal || 0) / 100,
+        fptsAgainst: (st.fpts_against || 0) + (st.fpts_against_decimal || 0) / 100,
+        waiver: st.waiver_position || null,
+      };
+    });
     S.compareA = S.compareB = null;   // re-pick the defaults now that names exist
+
+    // The fantasy schedule and this week's matchups only exist once the league is
+    // running; both fail quietly and the UI explains the blank.
+    S.fantasySchedule = await loadFantasySchedule(false);
+    S.matchups = await api(`/v1/league/${S.leagueId}/matchups/${S.week}`).catch(() => []);
+
     renderTeams();
+    renderLeague();
 
     const total = S.teamsInLeague.reduce((a, t) => a + t.players.length, 0);
     say('#teamsStatus', `${S.teamsInLeague.length} teams, ${total} players rostered` +
@@ -1829,13 +2142,16 @@ async function bootData(force) {
   }
 }
 
+/* The masthead leads with the league's own name — it's a page about this league,
+   not a product. Falls back to the generic title when nothing is imported. */
 function updateBadge() {
+  $('#mastTitle').textContent = S.leagueName || 'Fantasy Annual';
   const bits = [];
   if (S.season) {
     bits.push(S.seasonType === 'regular' ? `${S.season} · week ${S.week}` : `${S.season} ${S.seasonType || ''}`.trim());
   }
-  if (S.leagueName) bits.push(S.leagueName);
-  $('#stateBadge').textContent = bits.join('  ·  ') || 'offline';
+  if (S.teams) bits.push(`${S.teams} teams`);
+  $('#mastSub').textContent = bits.join('  ·  ') || 'offline';
 }
 
 async function init() {
