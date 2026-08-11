@@ -130,9 +130,17 @@ resets it.
 ## On the design
 
 It's set as a printed football annual — newsprint, ink type, one oxblood accent, ruled
-stat sheets instead of floating cards, headings and figures in a serif. There's a dark
-variant that swaps only the colour tokens; the type, rules and spacing don't change, so
-it reads as the same design either way. It follows your system light/dark setting.
+stat sheets instead of floating cards, headings and figures in a serif.
+
+**Paper / Ink / Auto** — the switch beside the draft clock cycles the theme. *Auto*
+removes the override and follows your system setting; the other two force it, so your
+choice survives a laptop that flips at sunset. Only the colour tokens change between
+them — type, rules and spacing are identical, so it reads as the same design either way.
+
+**Position colours** are rendered as tinted tags, not coloured text. Coloured text at
+10px is unreadable, and worse, the original palette was six *dark* hues that all read
+as the same smudge at that size. The hues are now chosen to stay apart from each other
+rather than to look good in isolation: red, green, blue, amber, violet, slate.
 
 ## The two ideas worth understanding
 

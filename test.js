@@ -30,7 +30,11 @@ Object.defineProperty(FakeEl.prototype, 'lastElementChild', {
 });
 
 var DOM = {};
+var FAKE_ROOT = { attrs: {}, setAttribute: function (k, v) { this.attrs[k] = v; },
+  removeAttribute: function (k) { delete this.attrs[k]; },
+  getAttribute: function (k) { return this.attrs[k] === undefined ? null : this.attrs[k]; } };
 globalThis.document = {
+  documentElement: FAKE_ROOT,
   querySelector: function (sel) { return DOM[sel] || (DOM[sel] = new FakeEl('div')); },
   querySelectorAll: function () { return []; },
   createElement: function (t) { return new FakeEl(t); },
@@ -1097,5 +1101,21 @@ smoke('renderAccuracy', renderAccuracy);
 ok('accuracy table rendered', document.querySelector('#accTable tbody').children.length > 0);
 S.accuracy = null;
 smoke('renderAccuracy empty', renderAccuracy);
+
+/* ---- 16. theme switch ---- */
+hdr('paper / ink switch');
+S.theme = 'auto'; applyTheme();
+ok('auto leaves the attribute off so the system decides',
+  FAKE_ROOT.getAttribute('data-theme') === null);
+ok('auto is labelled Auto', document.querySelector('#themeBtn').textContent === 'Auto');
+S.theme = 'dark'; applyTheme();
+ok('dark sets the attribute', FAKE_ROOT.getAttribute('data-theme') === 'dark');
+ok('dark is labelled Ink', document.querySelector('#themeBtn').textContent === 'Ink');
+S.theme = 'light'; applyTheme();
+ok('light forces light even under a dark system', FAKE_ROOT.getAttribute('data-theme') === 'light');
+ok('light is labelled Paper', document.querySelector('#themeBtn').textContent === 'Paper');
+ok('the cycle covers all three', THEMES.length === 3 &&
+  THEMES.join(',') === 'auto,light,dark');
+S.theme = 'auto'; applyTheme();
 
 print('\n' + (FAILS === 0 ? '*** ALL CHECKS PASSED ***' : '*** ' + FAILS + ' CHECK(S) FAILED ***'));

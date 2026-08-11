@@ -128,6 +128,7 @@ const S = {
   syncTimer: null,
   posFilter: 'ALL',
   faPos: 'ALL',
+  theme: LS.get('theme', 'auto'),   // 'auto' | 'light' | 'dark'
   search: '',
 };
 
@@ -2619,6 +2620,27 @@ $('#rankMode').onchange = async e => {
   updateModeNote();
 };
 
+/* -- paper or ink -------------------------------------------------------- */
+
+/* 'auto' removes the attribute entirely and lets the system setting decide; the other
+   two force it, so the choice survives a reader whose laptop flips at sunset. */
+const THEMES = ['auto', 'light', 'dark'];
+
+function applyTheme() {
+  const root = document.documentElement;
+  if (!root) return;
+  if (S.theme === 'auto') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', S.theme);
+  $('#themeBtn').textContent =
+    S.theme === 'auto' ? 'Auto' : S.theme === 'dark' ? 'Ink' : 'Paper';
+}
+
+$('#themeBtn').onclick = () => {
+  S.theme = THEMES[(THEMES.indexOf(S.theme) + 1) % THEMES.length];
+  LS.set('theme', S.theme);
+  applyTheme();
+};
+
 /* -- tabs ---------------------------------------------------------------- */
 
 $$('.tab').forEach(t => t.onclick = () => {
@@ -2677,6 +2699,7 @@ function updateBadge() {
 }
 
 async function init() {
+  applyTheme();
   renderSetupNumbers();
   renderSlotEditor();
   renderScoringEditor();

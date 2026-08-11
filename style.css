@@ -27,16 +27,22 @@
   --warn:    #8a5a0b;
   --bad:     #99271b;
 
-  --qb: #86305c; --rb: #1d5941; --wr: #1a4a74;
-  --te: #85570d; --k:  #493b74; --def:#565049;
+  /* Position hues, chosen to stay apart from each other at 10px rather than to look
+     pretty in isolation: red, green, blue, amber, violet, slate. Each is rendered as a
+     tinted tag, because coloured text alone is unreadable at this size. */
+  --qb: #b01834; --rb: #106b45; --wr: #12518d;
+  --te: #8f5300; --k:  #5b34a8; --def:#4b4a46;
 
   --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
   --sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --mono:  ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* The dark palette is declared twice on purpose: once for readers whose system asks
+   for dark and who haven't overridden it, once for readers who picked dark outright.
+   CSS has no way to share one block between two selectors without repeating it. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper:   #16140f;
     --paper-2: #1e1b15;
     --paper-3: #272319;
@@ -51,13 +57,40 @@
     --warn:    #d9a544;
     --bad:     #e07a68;
 
-    --qb: #e08cb4; --rb: #6cbb92; --wr: #7bb2e0;
-    --te: #d9a544; --k:  #a99ae0; --def:#a8a196;
+    --qb: #ff8296; --rb: #4ecf95; --wr: #6db4f2;
+    --te: #e8b04a; --k:  #b79bf5; --def:#a5a29a;
   }
   body { background-image: repeating-linear-gradient(0deg,
     rgba(255,255,255,.016) 0 1px, transparent 1px 3px); }
   tbody tr:nth-child(even) { background: rgba(255,255,255,.026); }
+  :root:not([data-theme="light"]) body { background-image: repeating-linear-gradient(0deg,
+    rgba(255,255,255,.016) 0 1px, transparent 1px 3px); }
+  :root:not([data-theme="light"]) tbody tr:nth-child(even) { background: rgba(255,255,255,.026); }
 }
+:root[data-theme="dark"] {
+    --paper:   #16140f;
+    --paper-2: #1e1b15;
+    --paper-3: #272319;
+    --ink:     #f0ebdf;
+    --ink-2:   #cfc7b6;
+    --ink-3:   #98907f;
+    --rule:    #3a3529;
+    --rule-2:  #4d4636;
+    --accent:  #d4674f;
+    --accent-2:#5fa886;
+    --good:    #6cbb92;
+    --warn:    #d9a544;
+    --bad:     #e07a68;
+
+    --qb: #ff8296; --rb: #4ecf95; --wr: #6db4f2;
+    --te: #e8b04a; --k:  #b79bf5; --def:#a5a29a;
+  }
+  body { background-image: repeating-linear-gradient(0deg,
+    rgba(255,255,255,.016) 0 1px, transparent 1px 3px); }
+  tbody tr:nth-child(even) { background: rgba(255,255,255,.026); }
+:root[data-theme="dark"] body { background-image: repeating-linear-gradient(0deg,
+  rgba(255,255,255,.016) 0 1px, transparent 1px 3px); }
+:root[data-theme="dark"] tbody tr:nth-child(even) { background: rgba(255,255,255,.026); }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -103,6 +136,16 @@ h1 {
 }
 
 /* the draft clock, set like a scoreboard figure */
+.mast-right { display: flex; align-items: flex-end; gap: 20px; }
+
+/* A plain text switch, set like a footnote rather than a UI control. */
+.theme-btn {
+  background: none; border: 0; border-bottom: 1px solid var(--rule-2);
+  color: var(--ink-3); cursor: pointer; padding: 1px 0;
+  font: italic 400 12px/1.4 var(--serif); border-radius: 0; white-space: nowrap;
+}
+.theme-btn:hover { color: var(--ink); border-bottom-color: var(--ink); background: none; }
+
 .clock { text-align: right; line-height: 1.2; }
 .clock-label {
   display: block; font: 400 10px/1 var(--sans);
@@ -317,9 +360,19 @@ tr.mine { background: var(--paper-2); }
 tr.mine td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 
 .slot-cell { font: 600 10px/1 var(--sans); letter-spacing: .13em; color: var(--ink-3); text-transform: uppercase; }
-.pos { font: 600 10.5px/1 var(--sans); letter-spacing: .07em; }
-.pos-QB{color:var(--qb)} .pos-RB{color:var(--rb)} .pos-WR{color:var(--wr)}
-.pos-TE{color:var(--te)} .pos-K{color:var(--k)}  .pos-DEF{color:var(--def)}
+.pos {
+  display: inline-block; font: 700 9.5px/1.45 var(--sans);
+  letter-spacing: .1em; padding: 1px 5px; border-radius: 2px;
+  color: var(--pc);
+  background: color-mix(in srgb, var(--pc) 13%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--pc) 34%, transparent);
+}
+.pos-QB{--pc:var(--qb)} .pos-RB{--pc:var(--rb)} .pos-WR{--pc:var(--wr)}
+.pos-TE{--pc:var(--te)} .pos-K{--pc:var(--k)}  .pos-DEF{--pc:var(--def)}
+
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  .pos { background: var(--paper-2); border-color: var(--rule); }
+}
 
 .inj { color: var(--bad); font: 600 9.5px/1 var(--sans); letter-spacing: .08em; margin-left: 6px; text-transform: uppercase; }
 .val-up { color: var(--good); } .val-down { color: var(--warn); }
