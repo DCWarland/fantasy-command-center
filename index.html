@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fantasy Command Center — Draft Board &amp; Lineup Optimizer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>🏈 Fantasy Command Center</h1>
+    <span id="stateBadge" class="badge">connecting…</span>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="setup">Setup</button>
+    <button class="tab" data-tab="draft">Draft Board</button>
+    <button class="tab" data-tab="lineup">Lineup</button>
+    <button class="tab" data-tab="teams">Teams &amp; Schedule</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ============================= SETUP ============================= -->
+<section id="tab-setup" class="panel active">
+
+  <div class="card">
+    <h2>1. Connect your Sleeper league <span class="opt">(optional)</span></h2>
+    <p class="hint">Type your Sleeper username to pull in your league's scoring rules, roster slots and
+      your team. No password needed — Sleeper's data is public and read-only. If your league isn't on
+      Sleeper, skip this and set things up by hand below.</p>
+    <div class="row">
+      <input id="username" type="text" placeholder="Sleeper username" autocomplete="off">
+      <button id="loadUser" class="primary">Find my leagues</button>
+    </div>
+    <div class="row" id="leagueRow" hidden>
+      <select id="leagueSelect"></select>
+      <button id="importLeague" class="primary">Import this league</button>
+    </div>
+    <p id="setupStatus" class="status"></p>
+  </div>
+
+  <div class="card">
+    <h2>2. Starting lineup slots</h2>
+    <p class="hint">How many of each slot your team starts each week. <b>FLEX</b> = RB/WR/TE,
+      <b>SUPER_FLEX</b> = QB/RB/WR/TE, <b>BN</b> = bench. These drive both the optimizer and the
+      draft board's value math.</p>
+    <div id="slotEditor" class="slot-editor"></div>
+    <div class="row">
+      <label>Teams in league <input id="teams" type="number" min="2" max="32" step="1" class="num"></label>
+      <label>My draft slot <input id="draftSlot" type="number" min="1" max="32" step="1" class="num"></label>
+      <label>Rounds <input id="rounds" type="number" min="1" max="40" step="1" class="num"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Scoring rules</h2>
+    <p class="hint">Points per stat. Every player's projection is recalculated from these numbers, so
+      a change here instantly reshuffles the draft board and the optimizer. Blank or 0 means the stat
+      doesn't score.</p>
+    <div class="row">
+      <label class="check"><input id="showAllScoring" type="checkbox"> Show rules worth 0</label>
+      <span id="scoringCount" class="badge small"></span>
+    </div>
+    <div id="scoringEditor" class="scoring-editor"></div>
+    <div class="row">
+      <button id="resetScoring">Reset to half-PPR defaults</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. Projection data</h2>
+    <p class="hint">Projections come from Sleeper's feed (sourced from Rotowire) and are cached in this
+      browser for 6 hours so the page loads fast. Hit refresh after big news.</p>
+    <div class="row">
+      <button id="refreshData" class="primary">Refresh projections now</button>
+      <span id="dataStatus" class="status"></span>
+    </div>
+    <div class="row">
+      <button id="wipe" class="danger">Erase all saved settings</button>
+      <span class="hint">Clears this browser's saved league, scoring and draft progress.</span>
+    </div>
+  </div>
+
+</section>
+
+<!-- ============================= DRAFT ============================= -->
+<section id="tab-draft" class="panel">
+
+  <div class="draft-layout">
+
+    <div class="card board-card">
+      <h2>Best available</h2>
+      <div class="row controls">
+        <input id="search" type="text" placeholder="Search player…" autocomplete="off">
+        <span id="posFilter" class="chips"></span>
+        <label class="check"><input id="hideDrafted" type="checkbox" checked> Hide drafted</label>
+      </div>
+      <details class="explain">
+        <summary>What the columns mean</summary>
+        <p class="hint">Sorted by <b>VOR</b> — value over replacement, i.e. how many points this
+          player beats the waiver-wire alternative at his position by. That's the number that
+          matters, not raw projected points, because every team's quarterback scores a lot.</p>
+        <p class="hint"><b>Grade</b> is what round he's worth, scaled to your league size:
+          S++/S+ are round 1, S is round 2, A+ rounds 3&ndash;4, on down to F for undraftable.
+          <b>Tier</b> is different — it marks the cliffs within a position, so players inside one
+          tier are near-interchangeable. <b>Bye</b> is his bye week. <b>SoS</b> rates his schedule
+          1 (easiest in the league) to 10 (hardest). <b>Val</b> is how far past his average draft
+          position he's still sitting there; positive means he's falling to you.</p>
+      </details>
+      <div class="table-wrap">
+        <table id="boardTable">
+          <thead>
+            <tr>
+              <th>#</th><th>Grade</th><th>Player</th><th>Pos</th><th>Tm</th>
+              <th class="num-col">Proj</th><th class="num-col">VOR</th>
+              <th>Tier</th><th class="num-col">Bye</th><th class="num-col">SoS</th>
+              <th class="num-col">ADP</th><th class="num-col">Val</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="card">
+        <h2>Live sync</h2>
+        <p class="hint">If you're drafting on Sleeper, this reads the real draft every 5 seconds and
+          crosses off picks automatically.</p>
+        <div class="row">
+          <button id="findDraft">Find my draft</button>
+          <label class="check"><input id="autoSync" type="checkbox"> Auto-sync</label>
+        </div>
+        <p id="draftStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h2>My picks <span id="pickClock" class="badge small"></span></h2>
+        <div id="myRosterDraft" class="mini-roster"></div>
+      </div>
+
+      <div class="card">
+        <h2>Needs &amp; runs</h2>
+        <div id="needs" class="needs"></div>
+      </div>
+
+      <div class="card">
+        <h2>Top at each position</h2>
+        <div id="byPosition" class="by-pos"></div>
+      </div>
+    </aside>
+
+  </div>
+</section>
+
+<!-- ============================ LINEUP ============================ -->
+<section id="tab-lineup" class="panel">
+
+  <div class="card">
+    <h2>My roster</h2>
+    <div class="row">
+      <label>Week <input id="week" type="number" min="1" max="18" step="1" class="num"></label>
+      <button id="pullRoster" class="primary">Pull my roster from Sleeper</button>
+      <input id="addPlayer" type="text" placeholder="…or type a name to add manually" autocomplete="off">
+    </div>
+    <div id="addResults" class="add-results"></div>
+    <p id="lineupStatus" class="status"></p>
+  </div>
+
+  <div class="lineup-layout">
+    <div class="card">
+      <h2>Optimal starting lineup
+        <span id="lineupTotal" class="badge"></span>
+      </h2>
+      <p class="hint">Every legal combination of your players is checked and the highest-scoring one
+        wins. A ⚠️ means that player isn't currently in your Sleeper starting lineup.</p>
+      <div class="table-wrap">
+        <table id="lineupTable">
+          <thead><tr><th>Slot</th><th>Player</th><th>Pos</th><th>Tm</th><th>Opp</th><th class="num-col">Proj</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="deltaNote" class="status"></p>
+    </div>
+
+    <div class="card">
+      <h2>Bench</h2>
+      <div class="table-wrap">
+        <table id="benchTable">
+          <thead><tr><th>Player</th><th>Pos</th><th>Tm</th><th>Opp</th><th class="num-col">Proj</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= TEAMS &amp; SCHEDULE ======================= -->
+<section id="tab-teams" class="panel">
+
+  <div class="card">
+    <h2>League rosters</h2>
+    <p class="hint">Pulls every team's roster from Sleeper so you can measure yourself against
+      the rest of the league. Before your draft runs these will all be empty, which is expected.</p>
+    <div class="row">
+      <button id="loadTeams" class="primary">Load league rosters</button>
+      <button id="loadSched">Reload schedule data</button>
+      <span id="teamsStatus" class="status"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Compare two teams</h2>
+    <p class="hint">Each roster is slotted into its best legal starting lineup, then compared
+      slot by slot. Comparing best-lineup totals rather than "add up everyone" is the honest
+      measure — a fourth good running back you can't start doesn't win you games.</p>
+    <div class="row">
+      <select id="cmpA"></select>
+      <span class="vs">vs</span>
+      <select id="cmpB"></select>
+    </div>
+    <p id="compareVerdict" class="verdict"></p>
+    <div id="compareBody"></div>
+  </div>
+
+  <div class="teams-layout">
+    <div class="card">
+      <h2>Best available in your league <span id="faCount" class="badge small"></span></h2>
+      <p class="hint">Ranked by VOR, excluding anyone already on a roster in your league — so
+        this doubles as a waiver-wire board once the season starts.</p>
+      <div class="row">
+        <select id="faPos">
+          <option value="ALL">All positions</option>
+          <option value="QB">QB</option><option value="RB">RB</option>
+          <option value="WR">WR</option><option value="TE">TE</option>
+          <option value="K">K</option><option value="DEF">DEF</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table id="faTable">
+          <thead><tr><th>Grade</th><th>Player</th><th>Pos</th><th>Tm</th>
+            <th class="num-col">Proj</th><th class="num-col">VOR</th><th class="num-col">Bye</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Strength of schedule</h2>
+      <p class="hint"><b>1 is the easiest slate in the league, 10 the hardest</b>, ranked against
+        all 32 teams. <b>Playoffs</b> covers weeks 15&ndash;17 only, which is the column that
+        actually decides your season. Read the caveat in the footer before trusting these
+        to two decimal places.</p>
+      <div class="table-wrap">
+        <table id="schedTable">
+          <thead><tr><th>Team</th><th class="num-col">Bye</th>
+            <th class="num-col">Season</th><th class="num-col">Playoffs</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Your bye weeks</h2>
+    <p class="hint">Three or more of your players idle in the same week is how you lose a
+      winnable matchup. Highlighted when it gets to that.</p>
+    <div id="byeWarn" class="needs"></div>
+  </div>
+
+</section>
+
+</main>
+
+<footer>
+  <p>Projections via Sleeper's public API (Rotowire), re-scored under your league's rules. Values
+     marked <b>*</b> had no headline projection from Sleeper to anchor to, so they're a raw stat sum
+     and less reliable. Nothing you enter leaves your browser.</p>
+  <p><b>On strength of schedule:</b> this API publishes no "fantasy points allowed by position"
+     data, so difficulty is proxied by each defence's own projected fantasy output — units that
+     collect sacks, interceptions and shutouts are the ones that smother offences. It's a
+     reasonable proxy and useful for sorting matchups, but it is not the same thing as measuring
+     what a defence gives up, so treat the numbers as a rough ordering rather than a precise
+     forecast. The schedule and bye weeks themselves are exact, reconstructed from the
+     week-by-week opponent listed on every projection.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
